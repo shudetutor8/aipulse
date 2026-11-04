@@ -4,7 +4,7 @@
 "use strict";
 
 const CONFIG = window.AIPULSE_CONFIG || {};
-const SITE = CONFIG.siteName || "AI Pulse";
+const SITE = CONFIG.siteName || "AI or Hype";
 const PAGE = 20;
 const H = 3600e3;
 
@@ -240,10 +240,10 @@ function storyCard(s) {
   const sources = Number(s.source_count ?? s.subtype ?? 1);
   return `<article class="card pad story">${storyImage(s.id, s.topic, s.image_url)}
     <div class="stack" style="gap:8px;flex:1 1 280px;min-width:0">
-      <div class="row meta"><span class="chip c-news">AI News</span><span>${esc(topicLabel(s.topic))} · ${plural(sources, "source")} · ${ago(s.published_at || s.created_at)}</span></div>
+      <div class="row meta"><span class="chip c-news">AI News</span>${s.article_at ? `<span class="chip c-full">Full story${s.article && s.article.words ? " · " + Math.max(1, Math.round(s.article.words / 230)) + " min" : ""}</span>` : ""}<span>${esc(topicLabel(s.topic))} · ${plural(sources, "source")} · ${ago(s.published_at || s.created_at)}</span></div>
       <h2 class="t-feed" style="font-size:19px"><a class="title-link" href="#/news/${s.id}">${esc(s.title)}</a></h2>
       ${(s.summary || s.excerpt) ? `<p class="body">${esc(s.summary || s.excerpt)}</p>` : ""}
-      <div class="row" style="justify-content:space-between"><a class="link" href="#/news/${s.id}">Discuss · ${plural(s.comment_count, "comment")}</a>${s.real_votes != null ? hypeBar(s, true) : ""}</div>
+      <div class="row" style="justify-content:space-between"><a class="link" href="#/news/${s.id}">${s.article_at ? "Read the full story" : "Read more"} · ${plural(s.comment_count, "comment")}</a>${s.real_votes != null ? hypeBar(s, true) : ""}</div>
     </div></article>`;
 }
 function postActions(id, isQ, score, myVote) {
@@ -485,7 +485,7 @@ function pulseChart(stories) {
 async function homeData() {
   const since = new Date(Date.now() - 24 * 3600e3).toISOString();
   const [stories, editorial, poll, question, trending, tickers, preds, leaders, models] = await Promise.all([
-    sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at")
+    sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at, article_at")
       .eq("is_hidden", false).gte("created_at", since).order("source_count", { ascending: false }).limit(1000),
     sb.from("posts").select("id, title, body, comment_count, created_at, story_id").eq("is_editorial", true).eq("status", "visible").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     sb.from("polls").select("*").eq("status", "live").order("total_votes", { ascending: false }).order("published_at", { ascending: false }).limit(1).maybeSingle(),
@@ -551,7 +551,7 @@ async function pageHome() {
         ${lead.summary ? `<p class="body" style="font-size:18px;max-width:72ch">${esc(lead.summary)}</p>` : ""}
         ${hypeBar(lead)}
         ${rateButtons(lead.id, extras.mine)}
-        <div class="row"><a class="btn btn-p" href="#/news/${lead.id}">Read and discuss · ${lead.comment_count}</a></div>
+        <div class="row"><a class="btn btn-p" href="#/news/${lead.id}">${lead.article_at ? "Read the full story" : "Read more"} · ${plural(lead.comment_count, "comment")}</a></div>
       </article>
       <aside class="timeline" aria-label="More on this topic">
         <h3>More in ${esc(topicLabel(lead.topic))}</h3>
@@ -641,7 +641,15 @@ async function pageStory(id) {
       <div class="row meta"><span class="chip c-news">AI News</span><span>${topicLink(s.topic)} · ${ago(s.published_at || s.created_at)}</span>${s.is_hidden ? `<span class="chip c-warn">Hidden</span>` : ""}</div>
       <h1 class="t-page">${esc(s.title)}</h1>
       ${s.image_url ? `<img src="${esc(s.image_url)}" alt="" referrerpolicy="no-referrer" style="max-height:360px;width:100%;object-fit:cover;border-radius:12px" onerror="this.remove()">` : ""}
-      ${s.summary ? `<section class="story-body">
+      ${s.article && (s.article.paragraphs || []).length ? `<section class="story-body">
+        <p class="eyebrow-mono">${Math.max(1, Math.round((s.article.words || 400) / 230))} min read · Written by ${esc(SITE)}</p>
+        ${s.article.paragraphs.map((x) => `<p class="story-text">${esc(x)}</p>`).join("")}
+        ${s.article.background ? `<h2 class="eyebrow-mono">Background</h2><p class="story-text">${esc(s.article.background)}</p>` : ""}
+        ${s.details && (s.details.key_points || []).length ? `<h2 class="eyebrow-mono">Key points</h2><ul class="story-points">${s.details.key_points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+        ${s.details && s.details.why_it_matters ? `<div class="why"><h2 class="eyebrow-mono">Why it matters</h2><p>${esc(s.details.why_it_matters)}</p></div>` : ""}
+        ${s.article.whats_next ? `<h2 class="eyebrow-mono">What's next</h2><p class="story-text">${esc(s.article.whats_next)}</p>` : ""}
+        <p class="meta">Written by ${esc(SITE)}'s AI newsroom from ${plural((s.article.sources || []).length || 1, "news report")}, in its own words. AI can make mistakes.</p>
+      </section>` : s.summary ? `<section class="story-body">
         <h2 class="eyebrow-mono">What happened</h2><p class="story-text">${esc(s.summary)}</p>
         ${s.details && (s.details.key_points || []).length ? `<h2 class="eyebrow-mono">Key points</h2><ul class="story-points">${s.details.key_points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
         ${s.details && s.details.why_it_matters ? `<div class="why"><h2 class="eyebrow-mono">Why it matters</h2><p>${esc(s.details.why_it_matters)}</p></div>` : ""}
