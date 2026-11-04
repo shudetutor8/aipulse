@@ -641,23 +641,49 @@ async function pageStory(id) {
       <div class="row meta"><span class="chip c-news">AI News</span><span>${topicLink(s.topic)} · ${ago(s.published_at || s.created_at)}</span>${s.is_hidden ? `<span class="chip c-warn">Hidden</span>` : ""}</div>
       <h1 class="t-page">${esc(s.title)}</h1>
       ${s.image_url ? `<img src="${esc(s.image_url)}" alt="" referrerpolicy="no-referrer" style="max-height:360px;width:100%;object-fit:cover;border-radius:12px" onerror="this.remove()">` : ""}
-      ${s.summary ? `<div class="summary-box"><p class="eyebrow">AI summary</p><p style="font-size:17px;color:var(--ink-2);margin-top:4px">${esc(s.summary)}</p></div>` : ""}
+      ${s.summary ? `<section class="story-body">
+        <h2 class="eyebrow-mono">What happened</h2><p class="story-text">${esc(s.summary)}</p>
+        ${s.details && (s.details.key_points || []).length ? `<h2 class="eyebrow-mono">Key points</h2><ul class="story-points">${s.details.key_points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+        ${s.details && s.details.why_it_matters ? `<div class="why"><h2 class="eyebrow-mono">Why it matters</h2><p>${esc(s.details.why_it_matters)}</p></div>` : ""}
+        <p class="meta">Written by ${esc(SITE)}'s AI from ${plural((links || []).length || s.source_count, "news report")}. AI can make mistakes.</p>
+      </section>` : ""}
       ${hypeBar(s)}
       ${rateButtons(s.id, myRating.data ? myRating.data.value : null)}
-      <div><h2 style="font-size:14px;font-weight:700;margin-bottom:4px">Read the full story · ${plural((links || []).length, "source")}</h2>
-        ${(links || []).map((l) => `<a class="list-row" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow"><span class="stack" style="gap:0"><b style="font-size:14px">${esc(l.source_name)}</b><span style="color:var(--ink-2)">${esc(l.title)}</span></span><span class="meta">${icon("ext")}</span></a>`).join("")}</div>
+      ${(links || []).length ? `<p class="credits"><span>Reported by</span> ${[...new Map(links.map((l) => [l.source_name, l])).values()].map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${esc(l.title)}">${esc(l.source_name)}</a>`).join(" · ")}</p>` : ""}
     </article>
     ${(talks || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">Discussion of the day</h2>${talks.map((p) => `<a class="list-row" href="#/p/${p.id}"><b>${esc(p.title)}</b><span class="meta">${plural(p.comment_count, "reply", "replies")}</span></a>`).join("")}</section>` : ""}
     ${(polls || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">Polls about this story</h2>${polls.map((p) => `<a class="list-row" href="#/polls/${p.id}"><b>${esc(p.question)}</b><span class="meta">${plural(p.total_votes, "vote")}</span></a>`).join("")}</section>` : ""}
     ${await commentsSection("story", s.id, "Discussion", "reply", "What do you think about this news?")}`;
 }
+/* Live prices and charts come from free TradingView widgets shown right on our pages (with TradingView's required credit link). */
+const EXCHANGE = { NVDA: "NASDAQ", MSFT: "NASDAQ", GOOGL: "NASDAQ", GOOG: "NASDAQ", AMZN: "NASDAQ", META: "NASDAQ", AMD: "NASDAQ", TSM: "NYSE", AVGO: "NASDAQ", ASML: "NASDAQ", ARM: "NASDAQ", PLTR: "NASDAQ", ORCL: "NYSE", MU: "NASDAQ", INTC: "NASDAQ", AAPL: "NASDAQ", TSLA: "NASDAQ", CRM: "NYSE", IBM: "NYSE", SMCI: "NASDAQ", SNOW: "NYSE", DELL: "NYSE", QCOM: "NASDAQ", ADBE: "NASDAQ", NOW: "NYSE", ANET: "NYSE", MRVL: "NASDAQ", CRWV: "NASDAQ" };
+const tvSym = (s) => (EXCHANGE[s] ? EXCHANGE[s] + ":" : "") + s.replace(".", "_");
+function tv(type, cfg, height) {
+  return `<div class="tv-box" style="min-height:${height}px" data-tv="${type}" data-cfg="${esc(JSON.stringify({ colorTheme: "light", locale: "en", isTransparent: true, ...cfg }))}"><p class="meta tv-wait">Loading market data…</p></div>`;
+}
+function mountTV() {
+  for (const box of document.querySelectorAll("[data-tv]:not([data-mounted])")) {
+    box.dataset.mounted = "1";
+    box.innerHTML = `<div class="tradingview-widget-container"><div class="tradingview-widget-container__widget"></div>
+      <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/" rel="noopener nofollow" target="_blank">Market data by TradingView</a></div></div>`;
+    const sc = document.createElement("script");
+    sc.src = `https://s3.tradingview.com/external-embedding/embed-widget-${box.dataset.tv}.js`;
+    sc.async = true;
+    sc.textContent = box.dataset.cfg;
+    box.firstElementChild.appendChild(sc);
+  }
+}
 async function pageStocks() {
-  const { data } = await sb.from("tickers").select("*").eq("active", true).order("symbol");
-  return `${header("AI Stocks", "A discussion thread for each company at the center of AI. Tap a price link to see the latest quote. Not investment advice.")}
-    <section class="card table-box"><table><caption class="sr">AI stocks</caption>
-      <thead><tr><th>Company</th><th>Latest price</th><th class="right">Discussion</th></tr></thead>
-      <tbody>${(data || []).map((t) => `<tr><td><a href="#/stocks/${t.symbol}" class="stack" style="gap:0"><b>${t.symbol}</b><span class="meta">${esc(t.name)}</span></a></td>
-        <td><a class="link" style="font-size:14px" href="https://finance.yahoo.com/quote/${encodeURIComponent(t.symbol)}" target="_blank" rel="noopener noreferrer">See price ↗</a></td>
+  const { data } = await sb.from("tickers").select("*").eq("active", true).order("comment_count", { ascending: false }).order("symbol");
+  const list = data || [];
+  return `${header("AI Stocks", "Live prices for the companies at the center of AI, with a discussion for each one. Prices may be delayed. Not investment advice.")}
+    ${list.length ? `<section class="card pad">${tv("ticker-tape", { symbols: list.map((t) => ({ proName: tvSym(t.symbol), title: t.symbol })), showSymbolLogo: true, displayMode: "adaptive" }, 46)}</section>
+    <section class="card pad">${tv("market-quotes", { width: "100%", height: Math.max(360, 60 + list.length * 46), showSymbolLogo: true,
+      symbolsGroups: [{ name: "AI stocks", symbols: list.map((t) => ({ name: tvSym(t.symbol), displayName: t.name })) }] }, Math.max(360, 60 + list.length * 46))}</section>` : ""}
+    <section class="card table-box"><table><caption class="sr">AI stock discussions</caption>
+      <thead><tr><th>Company</th><th>Chart and details</th><th class="right">Discussion</th></tr></thead>
+      <tbody>${list.map((t) => `<tr><td><a href="#/stocks/${t.symbol}" class="stack" style="gap:0"><b>${t.symbol}</b><span class="meta">${esc(t.name)}</span></a></td>
+        <td><a class="link" style="font-size:14px" href="#/stocks/${t.symbol}">Open ${t.symbol} →</a></td>
         <td class="right"><a class="link" href="#/stocks/${t.symbol}">${plural(t.comment_count, "comment")}</a></td></tr>`).join("")}</tbody></table></section>`;
 }
 async function pageTicker(sym) {
@@ -665,15 +691,24 @@ async function pageTicker(sym) {
   if (!/^[A-Z.]{1,10}$/.test(symbol)) return notFound();
   const { data: t } = await sb.from("tickers").select("*").eq("symbol", symbol).maybeSingle();
   if (!t) return notFound();
-  const word = t.name.split(" ")[0].replace(/[%_,()]/g, "");
+  const word = t.name.split(" ")[0].replace(/[%_,()*"]/g, "");
   const { data: related } = await sb.from("news_stories").select("id, title, published_at, created_at").eq("is_hidden", false)
-    .or(`title.ilike.%${word}%,title.ilike.%${symbol}%`).order("published_at", { ascending: false }).limit(5);
+    .or(`title.ilike.*${word}*,title.ilike.*${symbol}*`).order("published_at", { ascending: false }).limit(6);
   document.title = `${symbol} · ${t.name} · ${SITE}`;
-  return `<header class="card pad row between" style="align-items:flex-end">
-      <div><p class="eyebrow">${symbol}</p><h1 class="h-page">${esc(t.name)}</h1></div>
-      <div class="row"><a class="btn btn-o" href="https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}" target="_blank" rel="noopener noreferrer">Price on Yahoo Finance ↗</a><a class="btn btn-o" href="https://www.google.com/finance/quote/${encodeURIComponent(symbol)}" target="_blank" rel="noopener noreferrer">Google Finance ↗</a></div>
-      <p class="meta" style="width:100%">For information and discussion only. This is not investment advice.</p></header>
-    ${(related || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">Related AI news</h2>${related.map((s) => `<a class="list-row" href="#/news/${s.id}"><b>${esc(s.title)}</b><span class="meta">${ago(s.published_at || s.created_at)}</span></a>`).join("")}</section>` : ""}
+  const ts = tvSym(symbol);
+  return `<a class="link" href="#/stocks">← All AI stocks</a>
+    <section class="card pad stack" style="gap:6px">
+      <span class="eyebrow-mono">${symbol} · AI stock</span>
+      <h1 class="h-page">${esc(t.name)}</h1>
+      ${tv("single-quote", { symbol: ts, width: "100%" }, 90)}
+      ${tv("advanced-chart", { symbol: ts, autosize: false, width: "100%", height: 460, interval: "D", timezone: "America/New_York", style: "1", allow_symbol_change: false, hide_side_toolbar: true, calendar: false, support_host: "https://www.tradingview.com" }, 460)}
+      <p class="meta">Prices and charts may be delayed. For information and discussion only. This is not investment advice.</p>
+    </section>
+    <section class="grid2">
+      <div class="card pad">${tv("symbol-profile", { symbol: ts, width: "100%", height: 420 }, 420)}</div>
+      <div class="card pad">${tv("financials", { symbol: ts, width: "100%", height: 420, displayMode: "regular" }, 420)}</div>
+    </section>
+    ${(related || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">${esc(t.name)} in the AI news</h2>${related.map((s) => `<a class="list-row" href="#/news/${s.id}"><b>${esc(s.title)}</b><span class="meta">${ago(s.published_at || s.created_at)}</span></a>`).join("")}</section>` : ""}
     ${await commentsSection("ticker", symbol, symbol + " discussion", "reply", "What's your take on " + t.name + "?")}`;
 }
 async function pagePolls() {
@@ -775,7 +810,6 @@ async function pageModel(id) {
       <div class="mstats"><div><b>${m.rating_count ? Number(m.rating_avg).toFixed(1) : "–"}</b><span>reader rating · ${plural(m.rating_count, "rating")}</span></div>
         <div><b>${esc(m.best_for || "–")}</b><span>best for, say readers</span></div>
         <div><b>${fmt(m.mentions_week)}</b><span>stories this week ${trendArrow(m)}</span></div></div>
-      ${m.url ? `<a class="link" href="${esc(m.url)}" target="_blank" rel="noopener noreferrer nofollow">Visit ${esc(m.name)} ↗</a>` : ""}
       ${form}
     </article>
     <section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">${esc(m.name)} in the news</h2>${(related.data || []).map((s) => `<a class="list-row" href="#/news/${s.id}"><b>${esc(s.title)}</b><span class="meta">${ago(s.published_at || s.created_at)}</span></a>`).join("") || `<p class="meta">No recent stories.</p>`}</section>
@@ -990,21 +1024,55 @@ const pageGuidelines = () => prose("Community guidelines", `
   <h2 class="section-h">Do</h2><ul><li>Stay on topic: AI, the companies building it, and how it affects people, work and markets.</li><li>Argue with ideas, not people. Share sources when you can.</li><li>Upvote helpful answers, even when you disagree.</li><li>Say when you own a stock you discuss.</li></ul>
   <h2 class="section-h">Don't</h2><ul><li>Spam, advertise, or post referral links.</li><li>Harass, insult or threaten anyone, or post hateful or sexual content.</li><li>Share someone's private information.</li><li>Pump stocks or post misleading financial claims. Nothing here is investment advice.</li></ul>
   <h2 class="section-h">How moderation works</h2><p class="lead">New posts and replies are checked automatically. Anything that looks like it breaks these rules is held until a moderator reviews it. Members can report content, and moderators may hide content or suspend accounts.</p>`);
+const CONTACT = CONFIG.contactEmail || "";
+const contactHtml = () => CONTACT ? `<a class="link" href="mailto:${esc(CONTACT)}">${esc(CONTACT)}</a>` : `the contact email we'll publish here soon (until then, use the Report button on any post)`;
+const UPDATED = "November 3, 2026";
 const pageTerms = () => prose("Terms of service", `
-  <p class="meta">Last updated [DATE]. Starter text: have it reviewed before launch and fill in the bracketed details.</p>
-  <p class="lead">These terms apply to your use of ${esc(SITE)}, operated by [YOUR NAME OR COMPANY], [YOUR CITY, STATE]. By using the site you agree to them.</p>
-  <h2 class="section-h">Your account</h2><p class="lead">You must be at least 13 years old. Keep your login secure; you are responsible for activity on your account.</p>
-  <h2 class="section-h">Your content</h2><p class="lead">You own what you post. By posting, you let us host and display it on the site. Follow the community guidelines; we may remove content or suspend accounts that don't.</p>
-  <h2 class="section-h">AI-generated content</h2><p class="lead">News summaries, polls, predictions, prediction results and daily discussions are produced automatically by AI from third-party sources and may contain mistakes. Always check the original source. Predictions are a free game with no money or prizes.</p>
-  <h2 class="section-h">Not financial advice</h2><p class="lead">Stock discussions are for information only. Nothing on the site is investment, legal or other professional advice.</p>
-  <h2 class="section-h">Disclaimers</h2><p class="lead">The site is provided "as is" without warranties. To the extent the law allows, we are not liable for indirect or consequential losses from using it.</p>
-  <h2 class="section-h">Contact</h2><p class="lead">[CONTACT EMAIL]</p>`);
+  <p class="meta">Last updated ${UPDATED}</p>
+  <p class="lead">Welcome to ${esc(SITE)}. These terms are an agreement between you and the ${esc(SITE)} team ("we", "us"), which runs this website. By using the site you agree to these terms and to our <a class="link" href="#/privacy">Privacy Policy</a>. If you don't agree, please don't use the site.</p>
+  <h2 class="section-h">1. Who can use ${esc(SITE)}</h2><p class="lead">You must be at least 13 years old to create an account. If you are under 18, you need permission from a parent or guardian. You're responsible for keeping your login (your email inbox or Google account) secure and for everything done with your account.</p>
+  <h2 class="section-h">2. What the site does</h2><p class="lead">${esc(SITE)} collects artificial-intelligence news from public sources, writes short summaries, creates polls, prediction questions and daily discussions, and lets members ask questions, answer, comment, vote, rate and forecast. Much of this is done automatically by software and AI with no person checking each item first.</p>
+  <h2 class="section-h">3. AI-generated content can be wrong</h2><p class="lead">News summaries, polls, predictions, prediction results, model mention counts, moderation decisions and daily discussions are produced automatically by AI from third-party sources and may be inaccurate, incomplete or out of date. Every summary links to its original sources: check them before relying on anything. We don't endorse the third-party articles we link to and aren't responsible for their content.</p>
+  <h2 class="section-h">4. Predictions are a free game</h2><p class="lead">Predictions are for fun only. There is no entry fee, no money, no prizes and nothing of value to win or lose; points have no cash value and can't be exchanged or transferred. Results are settled automatically from news reports and may occasionally be wrong; we may correct, cancel or re-score a prediction at any time.</p>
+  <h2 class="section-h">5. Not financial or professional advice</h2><p class="lead">Nothing on ${esc(SITE)}, including stock discussion pages, polls, predictions, the Model Index and anything members post, is investment, financial, legal or other professional advice. Don't make investment decisions based on this site. Members who discuss a stock should say if they own it. Stock prices and charts are provided by TradingView, may be delayed, and are shown for information only.</p>
+  <h2 class="section-h">6. Your content</h2><p class="lead">You keep ownership of what you post. By posting, you give us a worldwide, non-exclusive, royalty-free license to host, store, display, reproduce, adapt (for example, to fit a screen) and distribute it on and in connection with ${esc(SITE)}, including in previews and search results. This license ends when you delete the content, except where it has been quoted or replied to by others or must be kept for legal reasons. Only post content you have the right to share.</p>
+  <h2 class="section-h">7. Rules</h2><p class="lead">Follow our <a class="link" href="#/guidelines">community guidelines</a>. In particular, don't: post spam, ads or scams; harass, threaten or impersonate anyone; post hateful, sexual or violent content; share anyone's private information; post illegal content or content that infringes someone else's rights; manipulate votes, polls, ratings or forecasts (for example with multiple accounts); scrape the site in bulk, attack it, or try to get around its security or limits.</p>
+  <h2 class="section-h">8. Moderation and accounts</h2><p class="lead">Posts and reports are checked automatically by AI. We may hide or remove any content, and limit, suspend or close any account, at any time and for any reason, including by automated decision. You can stop using the site at any time and ask us to delete your account.</p>
+  <h2 class="section-h">9. Copyright complaints</h2><p class="lead">If you believe something on ${esc(SITE)} infringes your copyright, email ${contactHtml()} with: the work you own, the exact page or post, your contact details, a statement that you believe in good faith the use isn't authorized, and a statement, under penalty of perjury, that your notice is accurate and you're the owner or authorized to act for them. We'll remove infringing material and may close accounts of repeat infringers.</p>
+  <h2 class="section-h">10. The service is provided "as is"</h2><p class="lead">${esc(SITE)} is a free service provided "as is" and "as available". To the fullest extent the law allows, we make no warranties of any kind, express or implied, including accuracy, availability, merchantability, fitness for a particular purpose and non-infringement. The site may change, have errors or downtime, or stop at any time.</p>
+  <h2 class="section-h">11. Limitation of liability</h2><p class="lead">To the fullest extent the law allows, we won't be liable for any indirect, incidental, special, consequential or punitive damages, or for lost profits, data or goodwill, arising from your use of the site or its content, and our total liability for any claim is limited to US$50. Some places don't allow these limits, so they may not fully apply to you.</p>
+  <h2 class="section-h">12. Indemnity</h2><p class="lead">If someone makes a claim against us because of content you posted or your breach of these terms, you agree to cover our reasonable costs and losses from that claim, to the extent the law allows.</p>
+  <h2 class="section-h">13. Governing law</h2><p class="lead">These terms are governed by the laws of the State of New York, USA, without regard to conflict-of-law rules. Any dispute will be handled in the state or federal courts located in New York, and you and we consent to their jurisdiction, unless the law where you live gives you the right to bring a claim locally.</p>
+  <h2 class="section-h">14. Changes</h2><p class="lead">We may update these terms. We'll change the "last updated" date above, and for significant changes we'll post a notice on the site. If you keep using ${esc(SITE)} after a change, you accept the new terms.</p>
+  <h2 class="section-h">15. Contact</h2><p class="lead">Questions about these terms: ${contactHtml()}.</p>`);
 const pagePrivacy = () => prose("Privacy policy", `
-  <p class="meta">Last updated [DATE]. Starter text: have it reviewed before launch.</p>
-  <h2 class="section-h">What we collect</h2><ul><li>Your email address and, if you sign in with Google, your name and profile picture.</li><li>What you post: questions, discussions, replies, votes, polls and reports.</li><li>Login cookies and basic technical data needed to run the site.</li></ul>
-  <h2 class="section-h">How we use it</h2><ul><li>To run your account and show your posts.</li><li>To keep the site safe: posts are checked by automated AI moderation (Groq, or an open-source model run on GitHub).</li><li>We do not sell your personal information.</li></ul>
-  <h2 class="section-h">Service providers</h2><p class="lead">GitHub (website hosting and scheduled jobs), Supabase (database and login) and Groq (AI summaries and moderation) process data on our behalf.</p>
-  <h2 class="section-h">Your choices</h2><p class="lead">You can edit your profile and delete your posts and replies. To delete your account, email [CONTACT EMAIL].</p>`);
+  <p class="meta">Last updated ${UPDATED}</p>
+  <p class="lead">This policy explains what information ${esc(SITE)} collects, how we use it and the choices you have. We keep it to what we need to run the site, and we never sell your personal information.</p>
+  <h2 class="section-h">What we collect</h2><ul>
+    <li><b>Account details:</b> your email address. If you sign in with Google, also your name and profile picture from Google. Your username, display name and bio if you add them.</li>
+    <li><b>What you do on the site:</b> questions, discussions, answers, comments, votes, polls you create, poll votes, forecasts, model ratings, "real or hype" ratings and reports, with the time you made them.</li>
+    <li><b>Technical data:</b> a login token stored in your browser so you stay signed in, and basic logs (such as IP address, browser type and time of request) kept by our hosting and database providers for security and to keep the service running.</li></ul>
+  <p class="lead">We don't use advertising cookies, ad networks or cross-site tracking, and we don't collect payment information.</p>
+  <h2 class="section-h">How we use it</h2><ul>
+    <li>To run your account and show what you post, with your username, to other visitors.</li>
+    <li>To count votes, forecasts and ratings, and to score predictions and show leaderboards.</li>
+    <li>To keep the site safe: posts, comments and reports are checked automatically by AI moderation (Groq, or an open-source model run on GitHub's servers), which may hide content.</li>
+    <li>To send you sign-in links by email. We don't send marketing email.</li></ul>
+  <h2 class="section-h">What's public</h2><p class="lead">Your username, display name, profile picture, bio, posts, answers, comments, forecasting points and settled forecasts are public. Your email address, your poll votes, your open (unsettled) forecasts and your ratings are not shown to other members.</p>
+  <h2 class="section-h">Who processes data for us</h2><ul>
+    <li><b>Supabase</b> (database and sign-in, data stored in the United States).</li>
+    <li><b>GitHub</b> (website hosting and the automatic jobs).</li>
+    <li><b>Groq</b> (AI that writes summaries and checks posts; it receives the text of posts and comments, not your email).</li>
+    <li><b>Google</b> (only if you choose "Continue with Google"; and Google Fonts, which delivers the site's fonts to your browser).</li>
+    <li><b>TradingView</b> (the live stock prices and charts on stock pages are loaded from TradingView, which receives your IP address and browser details when you open those pages).</li>
+    <li>News images and links come from the original publishers; opening them is covered by those sites' own policies.</li></ul>
+  <p class="lead">These providers process data on our behalf to run the service. We may also share information if required by law or to protect people's safety or the site.</p>
+  <h2 class="section-h">How long we keep it</h2><p class="lead">We keep your account and content while your account exists. When you delete a post or comment, it's removed from the site right away and from backups within about 30 days. If you ask us to delete your account, we delete your profile and content, except where we must keep something for legal reasons.</p>
+  <h2 class="section-h">Your choices and rights</h2><p class="lead">You can edit your profile and delete your posts and comments at any time. To get a copy of your data, correct it or delete your account, email ${contactHtml()}. Depending on where you live (for example California or the EU/UK), you may have additional rights, such as to know, access, correct, delete or object to how your data is used; we honor these requests for everyone. We don't sell or "share" personal information for advertising.</p>
+  <h2 class="section-h">Children</h2><p class="lead">${esc(SITE)} isn't meant for children under 13, and we don't knowingly collect their information. If you believe a child under 13 has an account, contact us and we'll delete it.</p>
+  <h2 class="section-h">Security</h2><p class="lead">We use encrypted connections (HTTPS), passwordless sign-in and database security rules that limit who can see and change data. No service is perfectly secure, so please use a secure email account.</p>
+  <h2 class="section-h">Changes</h2><p class="lead">We'll update the date above when this policy changes and post a notice on the site for significant changes.</p>
+  <h2 class="section-h">Contact</h2><p class="lead">Privacy questions or requests: ${contactHtml()}.</p>`);
 
 /* ---------------------------------------------------------------- router */
 function route() {
@@ -1048,6 +1116,7 @@ async function render({ keepScroll = false } = {}) {
     const railHtml = await railPromise;
     if (seq !== renderSeq) return;
     app.innerHTML = shell(r, page, rail, railHtml);
+    mountTV();
   } catch (e) {
     console.error(e);
     if (seq !== renderSeq) return;
