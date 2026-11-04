@@ -11,13 +11,13 @@ name: Automatic jobs
 
 on:
   schedule:
-    - cron: "7,37 * * * *"   # news + moderation, every 30 minutes
+    - cron: "7,37 * * * *"   # news, full articles and moderation, every 30 minutes
     - cron: "20 */6 * * *"   # new hot-topic polls, predictions and the Model Index, every 6 hours
     - cron: "5 12 * * *"     # Discussion of the day, 12:05 UTC (8:05 am New York in summer, 7:05 am in winter)
   workflow_dispatch:
     inputs:
       jobs:
-        description: "Jobs to run: news, moderate, polls, predictions, models, discussion or all"
+        description: "Jobs to run: news, articles, moderate, polls, predictions, models, discussion or all"
         default: "all"
         required: true
 
@@ -89,7 +89,7 @@ jobs:
           REQUESTED: ${{ github.event.inputs.jobs }}
         run: |
           case "$SCHEDULE" in
-            "7,37 * * * *") JOBS="news moderate" ;;
+            "7,37 * * * *") JOBS="news articles moderate" ;;
             "20 */6 * * *") JOBS="polls predictions models" ;;
             "5 12 * * *")   JOBS="discussion" ;;
             *)              JOBS="${REQUESTED:-all}" ;;
