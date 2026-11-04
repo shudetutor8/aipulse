@@ -254,3 +254,45 @@ h1, h2, h3, .logo, .t-feed, .t-page, .h-page, .section-h { font-family: var(--di
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px; align-items: start; }
 .section-title { font-size: 30px; font-weight: 900; margin: 12px 0 0; }
 @media (max-width: 760px) { .search-sm { flex: 1 1 100%; order: 10; } .topnav { order: 11; width: 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .topnav a { white-space: nowrap; } }
+
+/* ---------- Stage 2: predictions + Model Index */
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; }
+.sec-head h2 { font-size: 30px; font-weight: 900; margin: 0; }
+.pred-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch; }
+.pred-cards { flex: 999 1 560px; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px; }
+.pred-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 20px; }
+.pred .pred-q { font-size: 21px; font-weight: 800; line-height: 1.25; margin: 0; }
+.pred h1.pred-q { font-size: clamp(24px, 3vw, 32px); }
+.crowd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.crowd b { font-family: var(--display); font-size: 44px; font-weight: 900; line-height: 1; color: var(--accent); }
+.crowd span { color: var(--muted); font-weight: 600; }
+.fc { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); }
+.fc label { font-weight: 700; }
+.fc output { color: var(--accent); }
+.fc input[type="range"] { width: 100%; accent-color: var(--accent); height: 28px; }
+.fc-result { margin: 0; font-weight: 800; }
+.fc-result.good { color: var(--accent); } .fc-result.bad { color: #b4232c; }
+.leaders { flex: 1 1 300px; background: var(--dark); color: #fff; border-radius: 18px; padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+.leaders h3 { margin: 0 0 4px; font-size: 22px; font-weight: 800; }
+.leaders .ldr { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid #262b3d; font-weight: 600; }
+.leaders .ldr span:last-child { color: var(--signal); font-family: var(--mono); font-size: 14px; }
+.leaders .small { color: var(--dark-muted); font-size: 13px; margin-top: auto; }
+.link-dark { color: var(--signal); font-weight: 700; }
+.badge-fc { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; margin-left: 4px; border-radius: 999px; background: #e6fbf8; color: var(--accent); font-size: 11px; font-weight: 800; vertical-align: 1px; white-space: nowrap; }
+table.mx td, table.mx th { vertical-align: middle; }
+table.mx .up { color: var(--accent); font-size: 12px; margin-left: 4px; }
+table.mx .down, .mstats .down { color: #b4232c; font-size: 12px; margin-left: 4px; }
+.mstats .up { color: var(--accent); font-size: 12px; }
+.mono { font-family: var(--mono); }
+.mstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.mstats div { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 4px; }
+.mstats b { font-family: var(--display); font-size: 28px; font-weight: 900; }
+.mstats span { color: var(--muted); font-size: 13px; font-weight: 600; }
+.stars { border: 0; padding: 0; margin: 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.stars legend { margin-bottom: 6px; }
+.stars input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.stars label { min-width: 52px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 12px; font-weight: 800; cursor: pointer; background: var(--card, #fff); }
+.stars input:checked + label { background: var(--ink); color: #fff; border-color: var(--ink); }
+.stars input:focus-visible + label { outline: 3px solid var(--accent); outline-offset: 2px; }
+.how summary { cursor: pointer; }
+.how .body { margin: 10px 0 0; }
