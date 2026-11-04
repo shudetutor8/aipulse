@@ -10,7 +10,7 @@
 //   and optionally an AI key: GROQ_API_KEY (free, console.groq.com) or ANTHROPIC_API_KEY (paid).
 // Without a key, or when Groq is over its limit or down, the jobs use a free open-source
 // model (Qwen3-4B) that the workflow downloads and runs on GitHub's own computers (LOCAL_AI_DIR).
-// Optional: GROQ_MODEL, ANTHROPIC_MODEL, AUTO_PUBLISH_POLLS ("true" to skip review), SITE_URL
+// Optional: GROQ_MODEL, ANTHROPIC_MODEL, AUTO_PUBLISH_POLLS ("false" to review polls and predictions before they go live), SITE_URL
 
 import Anthropic from "@anthropic-ai/sdk";
 import { spawn } from "node:child_process";
@@ -27,7 +27,7 @@ const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
 const MODEL = env("ANTHROPIC_MODEL", "claude-haiku-5-5") || "claude-haiku-5-5";
 const GROQ_API_KEY = env("GROQ_API_KEY");
 const GROQ_MODEL = env("GROQ_MODEL", "openai/gpt-oss-120b") || "openai/gpt-oss-120b";
-const AUTO_PUBLISH = env("AUTO_PUBLISH_POLLS") === "true";
+const AUTO_PUBLISH = env("AUTO_PUBLISH_POLLS") !== "false"; // fully automatic unless set to "false"
 const SITE_URL = env("SITE_URL", "https://example.com");
 
 export const TOPICS = ["models", "agents", "chips", "policy", "funding", "research", "jobs", "stocks", "building", "general"];
@@ -351,6 +351,12 @@ async function topStories(hours, limit) {
 }
 
 async function jobPolls() {
+  if (AUTO_PUBLISH) {
+    const now = new Date();
+    const { data: waiting } = await db.from("polls").update({ status: "live", published_at: now.toISOString(), closes_at: new Date(now.getTime() + 48 * H).toISOString() })
+      .eq("status", "pending").eq("origin", "auto").select("id");
+    if (waiting?.length) log(`Polls: published ${waiting.length} that were waiting for review`);
+  }
   const { data: closed } = await db.from("polls").update({ status: "closed" }).eq("status", "live").lt("closes_at", new Date().toISOString()).select("id");
   log(`Polls: closed ${closed?.length || 0} finished polls`);
   if (!claude) return log("Polls: no AI key set (GROQ_API_KEY) and no built-in model, skipping");
@@ -443,15 +449,200 @@ async function jobModerate() {
     if (flagged.length) await db.from(table).update({ status: "flagged" }).in("id", flagged);
     log(`Moderation: checked ${rows.length} ${table}, held ${flagged.length} for review`);
   }
+  await reviewHeld();
+  await reviewReports();
+}
+
+const RULES = "You are the content moderator of an AI discussion community. Disagreement, criticism, strong opinions and negative views about AI or companies are allowed. " +
+  "Remove only: spam or advertising, scams, harassment or personal attacks, hate speech, sexual content, threats or incitement to violence, " +
+  "someone's private personal information, or instructions for serious harm.";
+async function judge(items) {
+  const res = await askJson(RULES,
+    `Items:\n${items.map((r, i) => `[${i}] ${r.text}`.slice(0, 1500)).join("\n\n")}\n\n` +
+    'Return {"remove":[0]} listing only the items that clearly break the rules (an empty list if none).', 800);
+  return new Set((res.remove || []).filter((i) => Number.isInteger(i) && items[i]));
+}
+// Posts held by the built-in spam check get a second, smarter look so nothing waits for a human.
+async function reviewHeld() {
+  for (const table of ["posts", "comments"]) {
+    const cols = table === "posts" ? "id, title, body" : "id, body";
+    const { data } = await db.from(table).select(cols).eq("status", "flagged").eq("ai_checked", false).order("created_at").limit(20);
+    const rows = data || [];
+    if (!rows.length) continue;
+    let remove;
+    try { remove = await judge(rows.map((r) => ({ text: (r.title ? r.title + "\n" : "") + r.body }))); } catch (e) { log(`Moderation: second look failed (${e.message})`); continue; }
+    const ok = rows.filter((_, i) => !remove.has(i)).map((r) => r.id), bad = rows.filter((_, i) => remove.has(i)).map((r) => r.id);
+    if (ok.length) await db.from(table).update({ status: "visible", ai_checked: true }).in("id", ok);
+    if (bad.length) await db.from(table).update({ status: "hidden", ai_checked: true }).in("id", bad);
+    log(`Moderation: second look at ${rows.length} held ${table}: ${ok.length} approved, ${bad.length} hidden`);
+  }
+}
+// Member reports are decided automatically: hidden if they break the rules, otherwise dismissed.
+async function reviewReports() {
+  const { data: reports } = await db.from("reports").select("id, target_type, target_id").eq("status", "open").order("created_at").limit(40);
+  if (!reports || !reports.length) return;
+  const targets = [...new Map(reports.map((r) => [r.target_type + r.target_id, r])).values()].slice(0, 15);
+  const [posts, comments] = await Promise.all([
+    db.from("posts").select("id, title, body").in("id", targets.filter((t) => t.target_type === "post").map((t) => t.target_id)),
+    db.from("comments").select("id, body").in("id", targets.filter((t) => t.target_type === "comment").map((t) => t.target_id)),
+  ]);
+  const text = new Map([...(posts.data || []).map((x) => [x.id, x.title + "\n" + x.body]), ...(comments.data || []).map((x) => [x.id, x.body])]);
+  const live = targets.filter((t) => text.has(t.target_id));
+  let remove = new Set();
+  if (live.length) {
+    try { remove = await judge(live.map((t) => ({ text: text.get(t.target_id) }))); } catch (e) { return log(`Moderation: report review failed (${e.message})`); }
+  }
+  let hidden = 0, dismissed = 0;
+  for (const t of targets) {
+    const i = live.indexOf(t), isBad = i >= 0 && remove.has(i);
+    if (isBad) { await db.from(t.target_type === "post" ? "posts" : "comments").update({ status: "hidden" }).eq("id", t.target_id); hidden++; } else dismissed++;
+    await db.from("reports").update({ status: isBad || i < 0 ? "resolved" : "dismissed" }).eq("target_type", t.target_type).eq("target_id", t.target_id).eq("status", "open");
+  }
+  log(`Moderation: reviewed ${targets.length} reported items: ${hidden} hidden, ${dismissed} kept`);
+}
+
+// ----------------------------------------------------------------------------- predictions
+async function jobPredictions() {
+  // Daily snapshot of every live crowd forecast, used for the "up/down this week" trend.
+  const day = new Date().toISOString().slice(0, 10);
+  const { data: live } = await db.from("predictions").select("id, crowd_prob").eq("status", "live");
+  const snaps = (live || []).filter((p) => p.crowd_prob != null).map((p) => ({ prediction_id: p.id, day, crowd_prob: p.crowd_prob }));
+  if (snaps.length) await db.from("prediction_history").upsert(snaps, { onConflict: "prediction_id,day" });
+  const weekAgo = new Date(Date.now() - 7 * 24 * H).toISOString().slice(0, 10);
+  for (const p of live || []) {
+    const { data: old } = await db.from("prediction_history").select("crowd_prob").eq("prediction_id", p.id).gte("day", weekAgo).order("day").limit(1).maybeSingle();
+    if (old && old.crowd_prob != null) await db.from("predictions").update({ prob_week_ago: old.crowd_prob }).eq("id", p.id);
+  }
+  if (AUTO_PUBLISH) {
+    const { data: waiting } = await db.from("predictions").update({ status: "live", published_at: new Date().toISOString() })
+      .eq("status", "pending").gt("closes_at", new Date().toISOString()).select("id");
+    if (waiting?.length) log(`Predictions: published ${waiting.length} that were waiting for review`);
+  }
+  if (!claude) return log("Predictions: no AI available, skipping");
+  await settlePredictions(day);
+  const { count: pending } = await db.from("predictions").select("id", { count: "exact", head: true }).eq("status", "pending");
+  if ((pending || 0) >= 6) return log("Predictions: review queue already has 6; approve or reject them in Admin first");
+  if ((live || []).length >= 20) return log("Predictions: 20 already open; not adding more");
+  const stories = await topStories(48, 15);
+  if (stories.length < 3) return log("Predictions: not enough recent stories yet");
+  const { data: recent } = await db.from("predictions").select("question").gte("created_at", new Date(Date.now() - 60 * 24 * H).toISOString()).limit(60);
+  const res = await askJson(
+    "You write questions for a free AI forecasting game (no money involved). Each question is a yes/no question about a future AI event that " +
+    "anyone can check later from public news or official announcements, with a clear deadline. Good: product launches, laws passed, benchmark records, " +
+    "company announcements, adoption milestones. Never ask about stock prices or investments, deaths, health of specific people, crimes, violence, " +
+    "elections or candidates, or private individuals. Avoid questions whose answer is already known. Be neutral and precise.",
+    `Today is ${day}. Top AI stories:\n${stories.map((s, i) => `[${i}] ${s.title}${s.summary ? " — " + s.summary : ""}`).join("\n")}\n\n` +
+    `Questions already asked (do not repeat):\n${(recent || []).map((p) => "- " + p.question).join("\n") || "- none"}\n\n` +
+    `Write up to 2 questions. resolves_by must be between 21 and 365 days from today (YYYY-MM-DD). criteria says exactly what counts as YES, in 1-2 sentences. Topics: ${TOPICS.join(", ")}.\n` +
+    'Return {"predictions":[{"question":"Will ... by <date>?","criteria":"...","resolves_by":"YYYY-MM-DD","search":"3-6 word news search that would find the answer","topic":"...","story_indexes":[0]}]}',
+  );
+  let made = 0;
+  for (const p of (res.predictions || []).slice(0, 2)) {
+    const question = str(p.question, 200);
+    const by = /^\d{4}-\d{2}-\d{2}$/.test(p.resolves_by || "") ? new Date(p.resolves_by + "T00:00:00Z") : null;
+    const days = by ? (by.getTime() - Date.now()) / (24 * H) : 0;
+    if (question.length < 10 || !by || days < 14 || days > 400) continue;
+    const { error } = await db.from("predictions").insert({
+      question, criteria: str(p.criteria, 800) || null, topic: topicOr(p.topic), origin: "auto",
+      status: AUTO_PUBLISH ? "live" : "pending", published_at: AUTO_PUBLISH ? new Date().toISOString() : null,
+      story_ids: (Array.isArray(p.story_indexes) ? p.story_indexes : []).map((i) => stories[i]?.id).filter(Boolean),
+      closes_at: by.toISOString(), resolves_by: p.resolves_by, search_query: str(p.search, 120) || null,
+    });
+    if (error) log("  could not save prediction:", error.message); else made++;
+  }
+  log(`Predictions: wrote ${made} (${AUTO_PUBLISH ? "published" : "waiting for your review in Admin"})`);
+}
+
+// Checks the news to settle predictions automatically.
+// YES as soon as reliable reports confirm it; NO only 2+ days after the deadline; cancelled if still unclear 3 weeks after.
+const DAY = 24 * H;
+export const hooks = { newsSearch: (q) => newsSearch(q) }; // replaceable in tests
+async function newsSearch(q) {
+  const parser = new Parser({ timeout: 15000, headers: { "User-Agent": "AIPulseBot/1.0 (+news reader)" } });
+  const feed = await parser.parseURL(`https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`);
+  return (feed.items || []).map((it) => ({ title: clean(it.title, 220), date: it.isoDate || it.pubDate || "", link: it.link || "" }))
+    .sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 15);
+}
+async function settlePredictions(day) {
+  if (usingLocalOnly() || (claude && claude.groqDown)) return log("Predictions: auto-settling waits for the main AI (Groq); the small backup model isn't trusted to settle");
+  const { data: rows } = await db.from("predictions").select("id, question, criteria, resolves_by, published_at, search_query, last_checked_at")
+    .eq("status", "live").order("last_checked_at", { ascending: true, nullsFirst: true }).limit(40);
+  const now = Date.now();
+  // Due ones first, then the rest (a YES can come early). At most 6 checks per run.
+  const list = (rows || []).filter((p) => !p.last_checked_at || now - new Date(p.last_checked_at).getTime() > 20 * H)
+    .sort((a, b) => (a.resolves_by <= day ? 0 : 1) - (b.resolves_by <= day ? 0 : 1)).slice(0, 6);
+  let settled = 0;
+  for (const p of list) {
+    const deadline = new Date(p.resolves_by + "T23:59:59Z").getTime();
+    const daysPast = (now - deadline) / DAY;
+    const q = p.search_query || [...tokens(p.question)].slice(0, 6).join(" ");
+    let news = [];
+    try { news = await hooks.newsSearch(q); } catch (e) { log(`  news search failed for "${p.question}": ${e.message}`); }
+    await db.from("predictions").update({ last_checked_at: new Date().toISOString() }).eq("id", p.id);
+    if (!news.length && daysPast < 21) continue;
+    let res;
+    try {
+      res = await askJson(
+        "You settle questions in a free forecasting game using news headlines. Be strict and factual. Answer YES only if the headlines clearly report " +
+        "that the event in the criteria has already happened (announcements of plans, rumors or opinions do not count). Answer NO if the deadline has passed " +
+        "and the headlines give no sign it happened, or they clearly report it did not or cannot happen in time. Otherwise answer unclear.",
+        `Today: ${day}\nQuestion: ${p.question}\nCounts as YES if: ${p.criteria || "the event in the question happens by the deadline"}\nDeadline: ${p.resolves_by} (${daysPast > 0 ? "passed" : "not yet passed"})\n` +
+        `Question published: ${(p.published_at || "").slice(0, 10)}\n\nRecent headlines:\n${news.map((n, i) => `[${i}] ${n.date.slice(0, 16)} ${n.title}`).join("\n") || "(none found)"}\n\n` +
+        'Return {"outcome":"yes|no|unclear","confidence":0.0,"evidence":"one short sentence","source_index":0}',
+        800,
+      );
+    } catch (e) { log(`  could not check "${p.question}": ${e.message}`); continue; }
+    const outcome = String(res.outcome || "").toLowerCase(), conf = Number(res.confidence) || 0;
+    const src = news[res.source_index];
+    const note = (str(res.evidence, 300) + (src ? ` Source: ${src.title} ${src.link}` : "")).slice(0, 560) + " (Settled automatically from news reports.)";
+    let result;
+    if (outcome === "yes" && conf >= 0.85) result = true;
+    else if (outcome === "no" && conf >= 0.8 && daysPast >= 2) result = false;
+    else if (daysPast >= 21) result = null;
+    else continue;
+    const { error } = await db.rpc("settle_prediction", { p_id: p.id, p_outcome: result,
+      p_note: result === null ? "Cancelled: the news didn't make the answer clear enough to score fairly. No points either way." : note });
+    if (error) log(`  could not settle "${p.question}": ${error.message}`);
+    else { settled++; log(`  settled ${result === null ? "CANCELLED" : result ? "YES" : "NO"}: ${p.question}`); }
+  }
+  log(`Predictions: checked ${list.length} against the news, settled ${settled}`);
+}
+
+// ----------------------------------------------------------------------------- model index
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function countMentions(models, stories, since) {
+  const out = Object.fromEntries(models.map((m) => [m.id, { week: 0, prev: 0 }]));
+  const res = models.map((m) => [m.id, new RegExp(`\\b(${[m.name.split(" / ")[0], ...(m.aliases || [])].map(escRe).join("|")})\\b`, "i")]);
+  for (const s of stories) {
+    const text = `${s.title} ${s.summary || ""}`;
+    const bucket = new Date(s.created_at).getTime() >= since ? "week" : "prev";
+    for (const [id, re] of res) if (re.test(text)) out[id][bucket]++;
+  }
+  return out;
+}
+async function jobModels() {
+  const { data: models } = await db.from("models").select("id, name, aliases").eq("active", true);
+  if (!models || !models.length) return log("Models: none in the index");
+  const now = Date.now(), from = new Date(now - 14 * 24 * H).toISOString();
+  const stories = [];
+  for (let page = 0; page < 20; page++) {
+    const { data } = await db.from("news_stories").select("title, summary, created_at").eq("is_hidden", false).gte("created_at", from)
+      .order("created_at").range(page * 1000, page * 1000 + 999);
+    stories.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  const counts = countMentions(models, stories, now - 7 * 24 * H);
+  for (const m of models) await db.from("models").update({ mentions_week: counts[m.id].week, mentions_prev_week: counts[m.id].prev }).eq("id", m.id);
+  log(`Models: counted mentions in ${stories.length} stories for ${models.length} models`);
 }
 
 // ----------------------------------------------------------------------------- main
-const JOBS = { news: jobNews, moderate: jobModerate, polls: jobPolls, discussion: jobDiscussion };
-async function main() {
+const JOBS = { news: jobNews, moderate: jobModerate, polls: jobPolls, discussion: jobDiscussion, predictions: jobPredictions, models: jobModels };
+export async function main() {
   let names = process.argv.slice(2).flatMap((a) => a.split(/[\s,]+/)).filter(Boolean);
-  if (!names.length || names.includes("all")) names = ["news", "moderate", "polls", "discussion"];
+  if (!names.length || names.includes("all")) names = ["news", "moderate", "polls", "predictions", "models", "discussion"];
   const unknown = names.filter((n) => !JOBS[n]);
-  if (unknown.length) throw new Error("Unknown job: " + unknown.join(", ") + ". Use news, moderate, polls, discussion or all.");
+  if (unknown.length) throw new Error("Unknown job: " + unknown.join(", ") + ". Use news, moderate, polls, predictions, models, discussion or all.");
   connect();
   if (!claude) log("Note: no AI available (no GROQ_API_KEY and no built-in model). News is saved without AI summaries; polls and discussions are skipped.");
   else log("AI: " + (claude.primary === "groq" ? "Groq (" + GROQ_MODEL + ")" : claude.primary === "anthropic" ? "Claude (" + MODEL + ")" : "built-in model on GitHub (free)")
