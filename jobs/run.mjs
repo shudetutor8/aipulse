@@ -713,29 +713,42 @@ async function readSources(links) {
   }
   return out;
 }
-// Pictures for the top stories (Google News items come without one): the first readable source's share picture.
-async function addImages() {
-  const { data: rows } = await db.from("news_stories").select("id, title").is("image_url", null).eq("image_checked", false).eq("is_hidden", false)
-    .gte("created_at", new Date(Date.now() - 36 * H).toISOString()).order("source_count", { ascending: false }).limit(10);
-  let found = 0;
-  for (const st of rows || []) {
-    const { data: links } = await db.from("news_links").select("url").eq("story_id", st.id).limit(4);
-    let img = null;
-    for (const l of links || []) {
-      try {
-        const real = await resolveGoogleNews(l.url);
-        const { text, url } = await fetchText(real);
-        img = shareImage(text, url);
-        if (img) break;
-      } catch (e) { /* try the next source */ }
-    }
-    await db.from("news_stories").update(img ? { image_url: img, image_checked: true } : { image_checked: true }).eq("id", st.id);
-    if (img) found++;
+// Can this page be shown inside our site? Publishers say no with X-Frame-Options or a CSP "frame-ancestors" rule.
+export function allowsEmbedding(headers) {
+  const xfo = (headers.get("x-frame-options") || "").toLowerCase();
+  if (xfo.includes("deny") || xfo.includes("sameorigin")) return false;
+  const csp = (headers.get("content-security-policy") || "").toLowerCase();
+  const fa = csp.split(";").map((x) => x.trim()).find((x) => x.startsWith("frame-ancestors"));
+  if (fa && !/\s\*(\s|$)/.test(fa + " ") && !/aiorhype\.com/.test(fa)) return false;
+  return true;
+}
+// For recent sources: find the real article address, whether it can open in our reader window, and a story picture.
+async function checkLinks() {
+  const { data: stories } = await db.from("news_stories").select("id, image_url").eq("is_hidden", false)
+    .gte("created_at", new Date(Date.now() - 48 * H).toISOString()).order("source_count", { ascending: false }).limit(40);
+  if (!stories || !stories.length) return;
+  const needImg = new Set(stories.filter((x) => !x.image_url).map((x) => x.id));
+  const { data: links } = await db.from("news_links").select("id, story_id, url").eq("checked", false).in("story_id", stories.map((x) => x.id)).order("id").limit(40);
+  let ok = 0, framed = 0, pics = 0;
+  for (const l of links || []) {
+    let real = null, frameable = false;
+    try {
+      real = await resolveGoogleNews(l.url);
+      const r = await fetch(real, { redirect: "follow", signal: AbortSignal.timeout(15000), headers: { "user-agent": BROWSER_UA, accept: "text/html,*/*;q=0.8" } });
+      real = r.url || real;
+      frameable = r.ok && real.startsWith("https://") && allowsEmbedding(r.headers);
+      if (r.ok && needImg.has(l.story_id)) {
+        const img = shareImage(await r.text(), real);
+        if (img) { await db.from("news_stories").update({ image_url: img, image_checked: true }).eq("id", l.story_id); needImg.delete(l.story_id); pics++; }
+      } else { try { await r.body?.cancel(); } catch (e) {} }
+      ok++; if (frameable) framed++;
+    } catch (e) { /* unreachable: keep it as a plain credit */ }
+    await db.from("news_links").update({ checked: true, real_url: real && /^https?:\/\//.test(real) ? real.slice(0, 1000) : null, frameable }).eq("id", l.id);
   }
-  log(`Pictures: found ${found} for ${(rows || []).length} stories without one`);
+  log(`Sources: checked ${(links || []).length}, ${framed} can open in the reader window, ${pics} pictures found`);
 }
 async function jobArticles() {
-  try { await addImages(); } catch (e) { log("Pictures: skipped (" + e.message + ")"); }
+  try { await checkLinks(); } catch (e) { log("Sources: skipped (" + e.message + ")"); }
   if (!claude || usingLocalOnly() || claude.groqDown) return log("Articles: waiting for the main AI (Groq); skipping");
   const dayAgo = new Date(Date.now() - 24 * H).toISOString();
   const { count: today } = await db.from("news_stories").select("id", { count: "exact", head: true }).gte("article_at", dayAgo);
