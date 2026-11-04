@@ -228,7 +228,7 @@ async function fetchFeeds() {
         const date = it.isoDate ? new Date(it.isoDate) : null;
         if (date && date.getTime() < cutoff) continue;
         const named = publisherOf(it, s.name, s.feed_url);
-        const snippet = /news\.google\.com/.test(s.feed_url) ? "" : clean(it.contentSnippet, 400);
+        const snippet = /news\.google\.com/.test(s.feed_url) ? "" : clean(it.contentSnippet, 900);
         if (!claude && !looksLikeAiNews(named.title + " " + snippet)) continue;
         items.push({ source: named.source, url: it.link.trim(), title: clean(named.title, 300), snippet,
           publishedAt: date && !isNaN(date) ? date.toISOString() : null, image: pickImage(it) });
@@ -280,18 +280,23 @@ async function summarize(groups) {
   const size = usingLocalOnly() ? 5 : 10;
   groups.forEach((g, i) => { if (i % size === 0) chunks.push([]); chunks.at(-1).push([i, g]); });
   for (const chunk of chunks) {
-    const listing = chunk.map(([i, g]) => `[${i}]\n` + g.items.slice(0, 3).map((it) => `- ${it.source}: ${it.title}${it.snippet ? " — " + it.snippet : ""}`).join("\n")).join("\n\n");
+    const listing = chunk.map(([i, g]) => `[${i}]\n` + g.items.slice(0, 6).map((it) => `- ${it.source}: ${it.title}${it.snippet ? " — " + it.snippet : ""}`).join("\n")).join("\n\n");
     try {
       const res = await askJson(
         "You are the news editor of an AI news site. For each numbered story decide whether it is mainly about artificial intelligence " +
         "(AI models, AI companies, AI chips and datacenters, AI policy, AI research, AI products, AI's effect on jobs or markets). " +
-        "Write a neutral, factual headline and a 2-3 sentence summary in your own words (max 60 words). Never copy sentences from the source and never add facts that are not in it. " +
+        "Write, in your own words, a neutral factual headline; a summary of what happened (2-4 sentences, max 90 words); 2-4 short key points; " +
+        "and one or two sentences on why it matters for AI, people or businesses. Use every source given for that story so the reader doesn't need to leave our site, " +
+        "but never copy sentences from the sources and never add facts, numbers or quotes that are not in them. If the sources say little, write less. " +
         `Pick a topic from: ${TOPICS.join(", ")}.`,
-        `Stories:\n\n${listing}\n\nReturn {"stories":[{"i":0,"about_ai":true,"topic":"models","headline":"...","summary":"..."}]} with one entry per story.`,
+        `Stories:\n\n${listing}\n\nReturn {"stories":[{"i":0,"about_ai":true,"topic":"models","headline":"...","summary":"...","key_points":["..."],"why_it_matters":"..."}]} with one entry per story.`,
       );
       for (const s of res.stories || []) {
         if (typeof s.i === "number" && str(s.headline, 160).length >= 5) {
-          out.set(s.i, { aboutAi: s.about_ai !== false, topic: topicOr(s.topic), headline: str(s.headline, 160), summary: str(s.summary, 700) || null });
+          const points = (Array.isArray(s.key_points) ? s.key_points : []).map((x) => str(x, 200)).filter((x) => x.length > 3).slice(0, 4);
+          const why = str(s.why_it_matters, 400);
+          out.set(s.i, { aboutAi: s.about_ai !== false, topic: topicOr(s.topic), headline: str(s.headline, 160), summary: str(s.summary, 900) || null,
+            details: points.length || why ? { key_points: points, why_it_matters: why || null } : null });
         }
       }
     } catch (e) {
@@ -332,7 +337,7 @@ async function jobNews() {
     const lead = g.items[0];
     const published = g.items.map((it) => it.publishedAt).filter(Boolean).sort()[0] || new Date().toISOString();
     const { data: story, error } = await db.from("news_stories").insert({
-      title: s?.headline || lead.title, summary: s?.summary || null, topic: s?.topic || guessTopic(lead.title + " " + lead.snippet),
+      title: s?.headline || lead.title, summary: s?.summary || null, details: s?.details || null, topic: s?.topic || guessTopic(lead.title + " " + lead.snippet),
       image_url: g.items.find((it) => it.image)?.image || null, published_at: published, source_count: g.items.length,
     }).select("id").single();
     if (error) { log("  could not save story:", error.message); continue; }
