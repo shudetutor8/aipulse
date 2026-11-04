@@ -724,11 +724,12 @@ export function allowsEmbedding(headers) {
 }
 // For recent sources: find the real article address, whether it can open in our reader window, and a story picture.
 async function checkLinks() {
-  const { data: stories } = await db.from("news_stories").select("id, image_url").eq("is_hidden", false)
+  const { data: stories } = await db.from("news_stories").select("id, title, image_url").eq("is_hidden", false)
     .gte("created_at", new Date(Date.now() - 48 * H).toISOString()).order("source_count", { ascending: false }).limit(40);
   if (!stories || !stories.length) return;
   const needImg = new Set(stories.filter((x) => !x.image_url).map((x) => x.id));
-  const { data: links } = await db.from("news_links").select("id, story_id, url").eq("checked", false).in("story_id", stories.map((x) => x.id)).order("id").limit(40);
+  const titleOf = new Map(stories.map((x) => [x.id, x.title]));
+  const { data: links } = await db.from("news_links").select("id, story_id, url, title").eq("checked", false).in("story_id", stories.map((x) => x.id)).order("id").limit(40);
   let ok = 0, framed = 0, pics = 0;
   for (const l of links || []) {
     let real = null, frameable = false;
@@ -737,7 +738,9 @@ async function checkLinks() {
       const r = await fetch(real, { redirect: "follow", signal: AbortSignal.timeout(15000), headers: { "user-agent": BROWSER_UA, accept: "text/html,*/*;q=0.8" } });
       real = r.url || real;
       frameable = r.ok && real.startsWith("https://") && allowsEmbedding(r.headers);
-      if (r.ok && needImg.has(l.story_id)) {
+      // Only take a picture from a source that is clearly about the same story (grouping can be imperfect).
+      const sameStory = similarity(tokens(l.title || ""), tokens(titleOf.get(l.story_id) || "")) >= 0.25;
+      if (r.ok && needImg.has(l.story_id) && sameStory) {
         const img = shareImage(await r.text(), real);
         if (img) { await db.from("news_stories").update({ image_url: img, image_checked: true }).eq("id", l.story_id); needImg.delete(l.story_id); pics++; }
       } else { try { await r.body?.cancel(); } catch (e) {} }
