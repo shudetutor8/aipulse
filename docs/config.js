@@ -4,8 +4,8 @@ window.AIPULSE_CONFIG = {
   siteName: "AI Pulse",
 
   // From Supabase → Project Settings → API Keys.
-  supabaseUrl: "",        // e.g. "https://abcdefgh.supabase.co"
-  supabaseKey: "",        // the PUBLISHABLE key (starts with sb_publishable_). Never the secret key.
+  supabaseUrl: "https://fubnqpfypwsijzmdfpyb.supabase.co",        // e.g. "https://abcdefgh.supabase.co"
+  supabaseKey: "sb_publishable_F6xHsrLfq2EAj9T8tl7u3w_8wvheEIJ",        // the PUBLISHABLE key (starts with sb_publishable_). Never the secret key.
 
   // Your GitHub repository, e.g. "shudetutor8/aipulse". Used for the admin page's "Run jobs now" link.
   githubRepo: "shudetutor8/aipulse",
