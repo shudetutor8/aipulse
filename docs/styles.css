@@ -321,3 +321,4 @@ table.mx .down, .mstats .down { color: #b4232c; font-size: 12px; margin-left: 4p
 .pw-eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--accent); font: inherit; font-weight: 700; font-size: 14px; cursor: pointer; }
 .pw-eye:hover { background: var(--bg); }
 @media (max-width: 520px) { .top-login { display: none; } }
+.chip.c-full { background: var(--dark); color: var(--signal); }
