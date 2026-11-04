@@ -2,7 +2,7 @@
   "name": "aipulse-jobs",
   "private": true,
   "type": "module",
-  "description": "Automatic jobs for AI Pulse: news, polls, daily discussion and moderation. Run by GitHub Actions.",
+  "description": "Automatic jobs for AI or Hype: news, full articles, polls, predictions, daily discussion and moderation. Run by GitHub Actions.",
   "scripts": {
     "jobs": "node run.mjs"
   },
@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.3.0",
+    "@mozilla/readability": "0.6.0",
     "@supabase/supabase-js": "2.118.0",
+    "jsdom": "26.1.0",
     "rss-parser": "3.13.0"
   }
 }
