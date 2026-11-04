@@ -19,6 +19,8 @@ import os from "node:os";
 import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import Parser from "rss-parser";
+import { Readability } from "@mozilla/readability";
+import { JSDOM, VirtualConsole } from "jsdom";
 
 const env = (k, fallback = "") => (process.env[k] ?? fallback).trim();
 const SUPABASE_URL = env("SUPABASE_URL");
@@ -641,13 +643,119 @@ async function jobModels() {
   log(`Models: counted mentions in ${stories.length} stories for ${models.length} models`);
 }
 
+// ----------------------------------------------------------------------------- full articles
+// For the top stories, the robot reads the original reports and writes its OWN complete article,
+// so readers get the whole story on our site. Facts are reported in new words; nothing is copied.
+const ARTICLES_PER_RUN = 3, ARTICLES_PER_DAY = 30;
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+const PAYWALLED = /(^|\.)(wsj|bloomberg|ft|nytimes|economist|theinformation|barrons|washingtonpost|thetimes|telegraph|businessinsider|seekingalpha)\.(com|co\.uk)$/i;
+async function fetchText(url, init = {}) {
+  const r = await fetch(url, { ...init, redirect: "follow", signal: AbortSignal.timeout(15000),
+    headers: { "user-agent": BROWSER_UA, "accept-language": "en-US,en;q=0.9", accept: "text/html,application/xhtml+xml,*/*;q=0.8", ...(init.headers || {}) } });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return { text: await r.text(), url: r.url || url };
+}
+// Google News links hide the real article address; this asks Google for it, the same way its own page does.
+export async function resolveGoogleNews(url) {
+  const m = String(url).match(/news\.google\.com\/(?:rss\/)?articles\/([A-Za-z0-9_-]+)/);
+  if (!m) return url;
+  const id = m[1];
+  const { text: html } = await fetchText(`https://news.google.com/rss/articles/${id}?hl=en-US&gl=US&ceid=US:en`);
+  const sg = html.match(/data-n-a-sg="([^"]+)"/)?.[1], ts = html.match(/data-n-a-ts="([^"]+)"/)?.[1];
+  if (!sg || !ts) throw new Error("no signature");
+  const inner = `["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"${id}",${ts},"${sg}"]`;
+  const { text } = await fetchText("https://news.google.com/_/DotsSplashUi/data/batchexecute", {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: "f.req=" + encodeURIComponent(JSON.stringify([[["Fbv4je", inner, null, "generic"]]])),
+  });
+  const real = JSON.parse(JSON.parse(text.split("\n\n")[1])[0][2])[1];
+  if (!/^https?:\/\//.test(real || "")) throw new Error("no address");
+  return real;
+}
+export function extractArticle(html, url) {
+  const dom = new JSDOM(html, { url, virtualConsole: new VirtualConsole() });
+  const art = new Readability(dom.window.document, { charThreshold: 400 }).parse();
+  dom.window.close();
+  return art ? clean(art.textContent, 20000) : "";
+}
+const words = (t) => t.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+// How many 10-word runs of our article also appear in the sources (0 = fully original wording).
+export function copiedRuns(article, sources, n = 10) {
+  const seen = new Set();
+  for (const s of sources) { const w = words(s); for (let i = 0; i + n <= w.length; i++) seen.add(w.slice(i, i + n).join(" ")); }
+  const w = words(article); let hits = 0;
+  for (let i = 0; i + n <= w.length; i++) if (seen.has(w.slice(i, i + n).join(" "))) hits++;
+  return hits;
+}
+async function readSources(links) {
+  const out = [];
+  for (const l of links.slice(0, 6)) {
+    if (out.length >= 3) break;
+    try {
+      const real = await resolveGoogleNews(l.url);
+      const host = new URL(real).hostname.replace(/^www\./, "");
+      if (PAYWALLED.test(host)) continue;
+      const { text: html, url } = await fetchText(real);
+      const body = extractArticle(html, url);
+      if (body.length >= 700) out.push({ name: l.source_name, url: real, text: body.slice(0, 3500) });
+    } catch (e) { /* unreadable source (blocked, paywall, timeout): try the next one */ }
+  }
+  return out;
+}
+async function jobArticles() {
+  if (!claude || usingLocalOnly() || claude.groqDown) return log("Articles: waiting for the main AI (Groq); skipping");
+  const dayAgo = new Date(Date.now() - 24 * H).toISOString();
+  const { count: today } = await db.from("news_stories").select("id", { count: "exact", head: true }).gte("article_at", dayAgo);
+  const room = Math.min(ARTICLES_PER_RUN, ARTICLES_PER_DAY - (today || 0));
+  if (room <= 0) return log(`Articles: daily limit of ${ARTICLES_PER_DAY} reached`);
+  const { data: cands } = await db.from("news_stories").select("id, title, summary, topic, source_count, article_tries")
+    .is("article", null).eq("is_hidden", false).lt("article_tries", 2).gte("created_at", new Date(Date.now() - 36 * H).toISOString())
+    .order("source_count", { ascending: false }).order("created_at", { ascending: false }).limit(12);
+  let written = 0;
+  for (const st of cands || []) {
+    if (written >= room) break;
+    const { data: links } = await db.from("news_links").select("source_name, url, title").eq("story_id", st.id).order("published_at", { ascending: false }).limit(8);
+    const sources = await readSources(links || []);
+    await db.from("news_stories").update({ article_tries: (st.article_tries || 0) + 1 }).eq("id", st.id);
+    if (!sources.length) { log(`  no readable source for "${st.title}"`); continue; }
+    let res;
+    try {
+      res = await askJson(
+        "You are a staff writer at an AI news site. Write an original, complete news article based ONLY on the source reports provided. " +
+        "Rules: write every sentence in your own words (never copy or closely paraphrase sentences; no direct quotes); report only facts stated in the sources and " +
+        "attribute claims (\"according to ...\"); be neutral and precise; no speculation, no hype, no advice; explain technical terms simply. " +
+        "Length: 350-550 words in 4-7 short paragraphs. If the sources disagree, say so.",
+        `Story: ${st.title}\n\n` + sources.map((s, i) => `SOURCE ${i + 1} (${s.name}):\n${s.text}`).join("\n\n") + "\n\n" +
+        'Return {"headline":"...","paragraphs":["...","..."],"key_points":["...","...","..."],"background":"1-3 sentences of context","whats_next":"1-2 sentences on what to watch, only if the sources say","why_it_matters":"1-2 sentences"}',
+        2500,
+      );
+    } catch (e) { log(`  could not write "${st.title}": ${e.message}`); continue; }
+    const paragraphs = (Array.isArray(res.paragraphs) ? res.paragraphs : []).map((x) => str(x, 1500)).filter((x) => x.length > 40).slice(0, 9);
+    const all = [...paragraphs, res.background || "", res.whats_next || "", ...(res.key_points || [])].join(" ");
+    const wordCount = words(paragraphs.join(" ")).length;
+    if (wordCount < 200) { log(`  article too short for "${st.title}"`); continue; }
+    const copied = copiedRuns(all, sources.map((s) => s.text));
+    if (copied > 2) { log(`  rejected "${st.title}": too close to a source's wording (${copied} copied runs)`); continue; }
+    const points = (Array.isArray(res.key_points) ? res.key_points : []).map((x) => str(x, 220)).filter((x) => x.length > 3).slice(0, 5);
+    const { error } = await db.from("news_stories").update({
+      title: str(res.headline, 160).length >= 10 ? str(res.headline, 160) : st.title,
+      article: { paragraphs, background: str(res.background, 600) || null, whats_next: str(res.whats_next, 500) || null, words: wordCount,
+        sources: sources.map((s) => ({ name: s.name, url: s.url })) },
+      details: { key_points: points, why_it_matters: str(res.why_it_matters, 400) || null },
+      article_at: new Date().toISOString(),
+    }).eq("id", st.id);
+    if (error) log("  could not save article:", error.message); else { written++; log(`  wrote full article (${wordCount} words): ${st.title}`); }
+  }
+  log(`Articles: wrote ${written} full articles (${(today || 0) + written} in the last 24 hours)`);
+}
+
 // ----------------------------------------------------------------------------- main
-const JOBS = { news: jobNews, moderate: jobModerate, polls: jobPolls, discussion: jobDiscussion, predictions: jobPredictions, models: jobModels };
+const JOBS = { articles: jobArticles, news: jobNews, moderate: jobModerate, polls: jobPolls, discussion: jobDiscussion, predictions: jobPredictions, models: jobModels };
 export async function main() {
   let names = process.argv.slice(2).flatMap((a) => a.split(/[\s,]+/)).filter(Boolean);
-  if (!names.length || names.includes("all")) names = ["news", "moderate", "polls", "predictions", "models", "discussion"];
+  if (!names.length || names.includes("all")) names = ["news", "articles", "moderate", "polls", "predictions", "models", "discussion"];
   const unknown = names.filter((n) => !JOBS[n]);
-  if (unknown.length) throw new Error("Unknown job: " + unknown.join(", ") + ". Use news, moderate, polls, predictions, models, discussion or all.");
+  if (unknown.length) throw new Error("Unknown job: " + unknown.join(", ") + ". Use news, articles, moderate, polls, predictions, models, discussion or all.");
   connect();
   if (!claude) log("Note: no AI available (no GROQ_API_KEY and no built-in model). News is saved without AI summaries; polls and discussions are skipped.");
   else log("AI: " + (claude.primary === "groq" ? "Groq (" + GROQ_MODEL + ")" : claude.primary === "anthropic" ? "Claude (" + MODEL + ")" : "built-in model on GitHub (free)")
