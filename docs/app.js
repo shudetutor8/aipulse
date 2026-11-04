@@ -74,9 +74,11 @@ function avatar(p, size = 36) {
 }
 const EDITOR = { id: "editor", editor: true, display_name: SITE + " Editor", username: null };
 const nameOf = (p) => (p ? p.display_name || p.username : "Deleted user");
+const isTopForecaster = (p) => p && p.forecasts_scored >= 5 && p.forecasts_right / p.forecasts_scored >= 0.7;
 function whoLine(p, sub) {
   const name = p && p.username ? `<a class="who-name" href="#/u/${esc(p.username)}">${esc(nameOf(p))}</a>` : `<span class="who-name">${esc(nameOf(p))}</span>`;
-  return `<div class="who">${avatar(p)}<div class="who-text">${name}${sub ? `<span class="meta">${sub}</span>` : ""}</div></div>`;
+  const badge = isTopForecaster(p) ? ` <span class="badge-fc" title="Called at least 70% of settled predictions right">Top forecaster</span>` : "";
+  return `<div class="who">${avatar(p)}<div class="who-text"><span>${name}${badge}</span>${sub ? `<span class="meta">${sub}</span>` : ""}</div></div>`;
 }
 const topicLink = (t) => `<a class="topic" href="#/t/${esc(t)}">${esc(topicLabel(t))}</a>`;
 
@@ -285,6 +287,83 @@ async function feedSection(key, opts, empty) {
   return feedList(items, x, empty) + pager(key, hasMore);
 }
 
+/* ---------------------------------------------------------------- predictions + models */
+const predOpen = (p) => p.status === "live" && new Date(p.closes_at).getTime() > Date.now();
+const longDate = (d) => new Date(String(d).length === 10 ? d + "T12:00:00Z" : d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+function trendText(p) {
+  if (p.crowd_prob == null) return "no forecasts yet";
+  if (p.prob_week_ago == null) return "crowd says yes";
+  const d = p.crowd_prob - p.prob_week_ago;
+  return `crowd says yes · ${d > 0 ? "up " + d : d < 0 ? "down " + -d : "no change"} this week`;
+}
+function predStatusLine(p) {
+  const base = `${plural(p.forecast_count, "forecast")}`;
+  if (p.status === "resolved") return `Settled ${p.outcome ? "YES" : "NO"} · ${base}`;
+  if (p.status === "void") return `Cancelled · ${base}`;
+  if (p.status === "pending") return `Waiting for review`;
+  return predOpen(p) ? `Resolves ${longDate(p.resolves_by)} · ${base}` : `Forecasting closed · waiting for the result`;
+}
+function forecastBox(p, mine) {
+  if (p.status === "resolved") {
+    return mine ? `<p class="fc-result ${mine.points >= 0 ? "good" : "bad"}">You said ${mine.prob}% · ${mine.points >= 0 ? "+" : ""}${mine.points} points</p>` : `<p class="meta">You didn't forecast this one.</p>`;
+  }
+  if (p.status === "void") return `<p class="meta">Cancelled: no points for anyone.</p>`;
+  if (!predOpen(p)) return mine ? `<p class="meta">Your forecast: ${mine.prob}% yes. Points are added when it's settled.</p>` : `<p class="meta">Forecasting is closed.</p>`;
+  if (!S.userId) return `<a class="pill" style="align-self:flex-start" href="#/login">Log in to make your forecast</a>`;
+  const v = mine ? mine.prob : p.crowd_prob || 50;
+  return `<form class="fc" data-form="forecast" data-id="${p.id}" data-has="${mine ? 1 : 0}">
+    <label for="fc-${p.id}">Your forecast: <output id="fo-${p.id}">${v}% yes</output></label>
+    <input type="range" id="fc-${p.id}" name="prob" min="1" max="99" value="${v}" data-out="fo-${p.id}">
+    <div class="row between"><span class="meta">${mine ? "Saved. You can change it until it closes." : "Slide, then save."}</span><button class="btn btn-p btn-s">${mine ? "Update forecast" : "Save forecast"}</button></div>
+  </form>`;
+}
+function predCard(p, mine, big = false) {
+  return `<article class="card pad stack pred">
+    <span class="eyebrow-mono">${predStatusLine(p)}</span>
+    <${big ? "h1" : "h2"} class="pred-q"><a class="title-link" href="#/predict/${p.id}">${esc(p.question)}</a></${big ? "h1" : "h2"}>
+    ${big && p.criteria ? `<p class="body"><b>Counts as YES if:</b> ${esc(p.criteria)}</p>` : ""}
+    <div class="crowd"><b>${p.crowd_prob == null ? "–" : p.crowd_prob + "%"}</b><span>${trendText(p)}</span></div>
+    ${p.status === "resolved" || p.status === "void" ? `<p class="note ${p.status === "resolved" ? (p.outcome ? "c-news" : "c-warn") : ""}"><b>${p.status === "void" ? "Cancelled" : "Result: " + (p.outcome ? "YES" : "NO")}</b>${p.resolution_note ? " · " + linkify(p.resolution_note) : ""}</p>` : ""}
+    ${forecastBox(p, mine)}
+    ${big ? "" : `<a class="link" href="#/predict/${p.id}">Why? Discuss · ${plural(p.comment_count, "comment")}</a>`}
+  </article>`;
+}
+async function myForecasts(ids) {
+  if (!S.userId || !ids.length) return new Map();
+  const { data } = await sb.from("forecasts").select("prediction_id, prob, points").eq("user_id", S.userId).in("prediction_id", ids);
+  return new Map((data || []).map((f) => [f.prediction_id, f]));
+}
+async function getLeaders(limit) {
+  const { data } = await sb.from("profiles").select("id, username, display_name, avatar_url, forecast_points, forecasts_scored, forecasts_right")
+    .gt("forecasts_scored", 0).eq("is_banned", false).order("forecast_points", { ascending: false }).limit(limit);
+  return data || [];
+}
+const pctRight = (u) => Math.round((u.forecasts_right / Math.max(1, u.forecasts_scored)) * 100);
+function leadersAside(leaders) {
+  return `<aside class="leaders" aria-label="Best forecasters"><h3>Best forecasters</h3>
+    ${leaders.length ? leaders.map((u, i) => `<a class="ldr" href="#/u/${esc(u.username)}"><span>${i + 1} · ${esc(nameOf(u))}</span><span>${pctRight(u)}% right</span></a>`).join("")
+      : `<p style="margin:0;color:var(--dark-muted)">No predictions settled yet. Make your calls now to be first on the board.</p>`}
+    <span class="small">Top forecasters (5+ settled calls, 70%+ right) get a badge next to their name everywhere on the site.</span>
+    <a class="link-dark" href="#/predict/leaders">Full leaderboard →</a></aside>`;
+}
+const BEST_FOR = ["Coding", "Writing", "Research", "Chat", "Images", "Video", "Agents", "Voice", "Math", "Everyday"];
+function trendArrow(m) {
+  const d = m.mentions_week - m.mentions_prev_week;
+  if (!m.mentions_prev_week && !m.mentions_week) return "";
+  return d > 0 ? `<span class="up" title="Up from ${m.mentions_prev_week} last week">▲ ${d}</span>` : d < 0 ? `<span class="down" title="Down from ${m.mentions_prev_week} last week">▼ ${-d}</span>` : "";
+}
+const ratingText = (m) => (m.rating_count ? `${Number(m.rating_avg).toFixed(1)} / 5 <span class="meta">· ${fmt(m.rating_count)}</span>` : `<span class="meta">Not rated yet</span>`);
+function modelTable(models, start = 0) {
+  return `<div class="table-box"><table class="mx"><thead><tr><th>#</th><th>Model</th><th>Reader rating</th><th>Best for</th><th>Mentions this week</th></tr></thead><tbody>
+    ${models.map((m, i) => `<tr><td class="mono">${start + i + 1}</td><td><a class="title-link" href="#/models/${m.id}"><b>${esc(m.name)}</b></a><div class="meta">${esc(m.maker)}</div></td>
+      <td>${ratingText(m)}</td><td>${m.best_for ? `<span class="chip c-news">${esc(m.best_for)}</span>` : `<span class="meta">–</span>`}</td>
+      <td class="mono">${fmt(m.mentions_week)} ${trendArrow(m)}</td></tr>`).join("")}
+  </tbody></table></div>`;
+}
+const sortModels = (list, by) => [...list].sort(by === "news"
+  ? (a, b) => b.mentions_week - a.mentions_week || a.name.localeCompare(b.name)
+  : (a, b) => (b.rating_count ? 1 : 0) - (a.rating_count ? 1 : 0) || Number(b.rating_avg || 0) - Number(a.rating_avg || 0) || b.rating_count - a.rating_count || b.mentions_week - a.mentions_week);
+
 /* ---------------------------------------------------------------- comments */
 function commentForm(tt, tid, parent, placeholder) {
   const key = `${tt}|${tid}|${parent || ""}`;
@@ -336,7 +415,7 @@ async function commentsSection(tt, tid, title, noun, placeholder, ctx = {}) {
 }
 
 /* ---------------------------------------------------------------- shell */
-const NAV = [["", "Today"], ["news", "News"], ["polls", "Polls"], ["discussions", "Debates"], ["questions", "Q&A"], ["stocks", "Stocks"]];
+const NAV = [["", "Today"], ["news", "News"], ["predict", "Predict"], ["polls", "Polls"], ["discussions", "Debates"], ["questions", "Q&A"], ["models", "Models"], ["stocks", "Stocks"]];
 function shell(route, content, rail, railHtml) {
   const p = me();
   const head = route[0] || "";
@@ -357,7 +436,7 @@ function shell(route, content, rail, railHtml) {
       <main class="main" id="main" tabindex="-1">${content}</main>
       ${rail ? railHtml : ""}
     </div></div>
-    <footer class="footer"><div class="wrap"><p style="max-width:60ch">© ${new Date().getFullYear()} ${esc(SITE)}. News is summarized by AI from the linked sources. Polls and daily discussions are generated automatically. Nothing here is investment advice.</p>
+    <footer class="footer"><div class="wrap"><p style="max-width:60ch">© ${new Date().getFullYear()} ${esc(SITE)}. News is summarized by AI from the linked sources. Polls, predictions and daily discussions are generated automatically. Predictions are for fun, with no money involved. Nothing here is investment advice.</p>
       <nav aria-label="Footer"><a href="#/guidelines">Community guidelines</a><a href="#/terms">Terms</a><a href="#/privacy">Privacy</a></nav></div></footer>`;
 }
 function railView(r) {
@@ -405,7 +484,7 @@ function pulseChart(stories) {
 }
 async function homeData() {
   const since = new Date(Date.now() - 24 * 3600e3).toISOString();
-  const [stories, editorial, poll, question, trending, tickers] = await Promise.all([
+  const [stories, editorial, poll, question, trending, tickers, preds, leaders, models] = await Promise.all([
     sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at")
       .eq("is_hidden", false).gte("created_at", since).order("source_count", { ascending: false }).limit(1000),
     sb.from("posts").select("id, title, body, comment_count, created_at, story_id").eq("is_editorial", true).eq("status", "visible").order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -413,8 +492,12 @@ async function homeData() {
     sb.from("posts").select("id, title, comment_count, score, best_comment_id").eq("kind", "question").eq("status", "visible").order("score", { ascending: false }).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     sb.from("feed").select("kind, id, title, comment_count").neq("kind", "story").gte("created_at", new Date(Date.now() - 7 * 24 * 3600e3).toISOString()).order("hot", { ascending: false }).limit(5),
     sb.from("tickers").select("symbol, comment_count").eq("active", true).order("comment_count", { ascending: false }).order("symbol").limit(5),
+    sb.from("predictions").select("*").eq("status", "live").gt("closes_at", new Date().toISOString()).order("forecast_count", { ascending: false }).order("published_at", { ascending: false }).limit(2),
+    getLeaders(3),
+    sb.from("models").select("*").eq("active", true),
   ]);
-  return { stories: stories.data || [], editorial: editorial.data, poll: poll.data, question: question.data, trending: trending.data || [], tickers: tickers.data || [] };
+  return { stories: stories.data || [], editorial: editorial.data, poll: poll.data, question: question.data, trending: trending.data || [], tickers: tickers.data || [],
+    preds: preds.data || [], leaders, models: models.data || [] };
 }
 async function leadExtras(lead) {
   const [timeline, mine] = await Promise.all([
@@ -435,11 +518,12 @@ async function pageHome() {
     const d = await homeData();
     const { stories } = d;
     const lead = stories[0];
-    const [extras, pollOpts, myPoll, answer] = await Promise.all([
+    const [extras, pollOpts, myPoll, answer, myFc] = await Promise.all([
       lead ? leadExtras(lead) : null,
       d.poll ? sb.from("poll_options").select("*").eq("poll_id", d.poll.id).order("position") : { data: [] },
       d.poll && S.userId ? sb.from("poll_votes").select("option_id").eq("poll_id", d.poll.id).eq("user_id", S.userId).maybeSingle() : { data: null },
       d.question && d.question.comment_count ? sb.from("comments").select("*").eq("target_type", "post").eq("target_id", d.question.id).is("parent_id", null).order("score", { ascending: false }).limit(1).maybeSingle() : { data: null },
+      myForecasts(d.preds.map((x) => x.id)),
     ]);
     const answerer = answer.data ? (await getProfiles([answer.data.author_id])).get(answer.data.author_id) : null;
     const articles = stories.reduce((a, s) => a + (s.source_count || 1), 0);
@@ -505,9 +589,20 @@ async function pageHome() {
         <div class="row">${d.tickers.map((t) => `<a class="pill" style="height:36px;font-size:13px" href="#/stocks/${t.symbol}">${t.symbol} · ${t.comment_count}</a>`).join("")}</div>
         <p class="meta">Opinions only. Not investment advice.</p>
       </aside>`;
-    top = `${pulse}${leadCard}
+    const predSection = `<section class="stack" aria-label="Predictions">
+      <div class="sec-head"><h2>Call it: predictions</h2><span class="meta">Free to play. Earn points when you're right. No money involved.</span></div>
+      <div class="pred-row">
+        <div class="pred-cards">${d.preds.length ? d.preds.map((x) => predCard(x, myFc.get(x.id))).join("") : `<div class="card pad stack"><p class="lead">New prediction questions are written from the news every few hours.</p><a class="link" href="#/predict">See all predictions →</a></div>`}</div>
+        ${leadersAside(d.leaders)}
+      </div></section>`;
+    const topModels = sortModels(d.models, "rating").slice(0, 5);
+    const modelSection = topModels.length ? `<section class="stack" aria-label="The Model Index">
+      <div class="sec-head"><h2>The Model Index</h2><span class="meta">How readers rate the AI tools they actually use, and how often each is in the news</span></div>
+      <div class="card pad stack">${modelTable(topModels)}<a class="link" href="#/models">Full index and rate the models you use →</a></div></section>` : "";
+    top = `${pulse}${leadCard}${predSection}
       ${debate || pollCardHtml ? `<section class="grid2">${debate}${pollCardHtml}</section>` : ""}
       <section class="grid2">${questionCard}${side}</section>
+      ${modelSection}
       <h2 class="section-title">From the community</h2>`;
   }
   return `${top}<section class="card pad stack" aria-label="Ask or share">
@@ -609,6 +704,83 @@ async function pagePoll(id) {
     </article>
     ${published ? await commentsSection("poll", p.id, "Debate", "reply", "Explain your vote. What's your argument?") : ""}`;
 }
+async function pagePredict(sub) {
+  if (sub && sub !== "leaders" && sub !== "settled") return pagePrediction(sub);
+  const tab = sub || "open";
+  const head = header("Predictions", "Make your call on what happens next in AI. Free to play: earn points when you're right. No money involved.",
+    `<a class="btn btn-o" href="#/predict/leaders">Best forecasters</a>`);
+  const tabsHtml = `<nav class="row" aria-label="Show">${[["", "Open"], ["settled", "Settled"], ["leaders", "Best forecasters"]].map(([id, l]) => `<a class="pill ${(id || "open") === tab ? "on" : ""}" href="#/predict${id ? "/" + id : ""}">${l}</a>`).join("")}</nav>`;
+  const how = `<details class="card pad how"><summary><b>How points work</b></summary><p class="body">Slide to how likely you think YES is. When the question is settled: saying 50% earns 0 points; the more confident you were and right, the more you earn (up to +100); confident and wrong loses up to −300. So only be sure when you're sure. Your forecast stays private until the question is settled.</p></details>`;
+  if (tab === "leaders") {
+    const leaders = await getLeaders(50);
+    return `${head}${tabsHtml}<section class="card pad">${leaders.length ? `<div class="table-box"><table><thead><tr><th>#</th><th>Forecaster</th><th>Points</th><th>Right</th><th>Settled calls</th></tr></thead><tbody>
+      ${leaders.map((u, i) => `<tr><td class="mono">${i + 1}</td><td><a class="row" style="gap:10px;flex-wrap:nowrap" href="#/u/${esc(u.username)}">${avatar(u, 30)}<b>${esc(nameOf(u))}</b></a></td><td class="mono">${fmt(u.forecast_points)}</td><td class="mono">${pctRight(u)}%</td><td class="mono">${u.forecasts_scored}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="lead">No predictions have been settled yet. Make your calls now to be first on the board.</p>`}</section>${how}`;
+  }
+  const page = ui.page.predict || 1;
+  let q = sb.from("predictions").select("*");
+  q = tab === "settled" ? q.in("status", ["resolved", "void"]).order("resolved_at", { ascending: false })
+    : q.eq("status", "live").order("forecast_count", { ascending: false }).order("published_at", { ascending: false });
+  const { data } = await q.range((page - 1) * PAGE, page * PAGE);
+  const rows = (data || []).slice(0, PAGE);
+  const mine = await myForecasts(rows.map((x) => x.id));
+  return `${head}${tabsHtml}${how}
+    ${rows.length ? `<div class="pred-grid">${rows.map((x) => predCard(x, mine.get(x.id))).join("")}</div>` : `<div class="card pad meta" style="text-align:center">${tab === "settled" ? "Nothing settled yet." : "No open predictions right now. New ones are written from the news every few hours."}</div>`}
+    ${pager("predict", (data || []).length > PAGE)}`;
+}
+async function pagePrediction(id) {
+  if (!isUuid(id)) return notFound();
+  const { data: p } = await sb.from("predictions").select("*").eq("id", id).maybeSingle();
+  if (!p) return notFound();
+  const [mine, stories] = await Promise.all([
+    myForecasts([p.id]),
+    p.story_ids && p.story_ids.length ? sb.from("news_stories").select("id, title").in("id", p.story_ids) : { data: [] },
+  ]);
+  document.title = p.question + " · " + SITE;
+  const live = p.status !== "pending" && p.status !== "rejected";
+  return `<a class="link" href="#/predict">← All predictions</a>
+    ${predCard(p, mine.get(p.id), true)}
+    ${(stories.data || []).length ? `<section class="card pad"><h2 style="font-size:14px;font-weight:700">Based on</h2>${stories.data.map((s) => `<p><a class="link" style="font-size:14px" href="#/news/${s.id}">${esc(s.title)}</a></p>`).join("")}</section>` : ""}
+    ${live ? await commentsSection("prediction", p.id, "Discussion", "reply", "What makes you think so? Share your reasoning.") : `<p class="note c-warn">This prediction is waiting for review. <a class="link" href="#/admin">Open admin</a></p>`}`;
+}
+async function pageModels() {
+  const by = ui.sort.models || "rating";
+  const { data } = await sb.from("models").select("*").eq("active", true);
+  const list = sortModels(data || [], by);
+  return `${header("The Model Index", "How readers rate the AI tools they actually use, and how often each one is in the AI news this week. Open a model to rate it.")}
+    ${tabs("models", [["rating", "Top rated"], ["news", "Most in the news"]])}
+    <section class="card pad stack">${list.length ? modelTable(list) : `<p class="meta">No models yet.</p>`}
+      <p class="meta">Ratings come from signed-in readers. "Mentions" counts this week's AI stories on ${esc(SITE)} that name the model; ▲▼ compares with last week.</p></section>`;
+}
+async function pageModel(id) {
+  if (!/^[a-z0-9-]{2,40}$/.test(id || "")) return notFound();
+  const { data: m } = await sb.from("models").select("*").eq("id", id).maybeSingle();
+  if (!m) return notFound();
+  const names = [m.name.split(" / ")[0], ...(m.aliases || [])].filter((a) => /^[\w .-]{2,40}$/.test(a));
+  const [mine, related] = await Promise.all([
+    S.userId ? sb.from("model_ratings").select("stars, best_for").eq("model_id", id).eq("user_id", S.userId).maybeSingle() : { data: null },
+    names.length ? sb.from("news_stories").select("id, title, published_at, created_at").eq("is_hidden", false).or(names.map((n) => `title.ilike."*${n}*"`).join(",")).order("created_at", { ascending: false }).limit(8) : { data: [] },
+  ]);
+  const r = mine.data;
+  document.title = m.name + " · Model Index · " + SITE;
+  const form = !S.userId ? `<a class="pill" style="align-self:flex-start" href="#/login">Log in to rate ${esc(m.name)}</a>`
+    : `<form class="stack" style="gap:12px" data-form="model-rate" data-id="${m.id}" data-has="${r ? 1 : 0}">
+      <fieldset class="stars"><legend class="label">Your rating</legend>${[1, 2, 3, 4, 5].map((n) => `<input type="radio" id="st${n}" name="stars" value="${n}" ${r && r.stars === n ? "checked" : ""} required><label for="st${n}" title="${n} star${n > 1 ? "s" : ""}">${n}★</label>`).join("")}</fieldset>
+      <div><label class="label" for="bf">What do you mostly use it for?</label><select class="field" id="bf" name="best_for"><option value="">Choose (optional)</option>${BEST_FOR.map((b) => `<option ${r && r.best_for === b ? "selected" : ""}>${b}</option>`).join("")}</select></div>
+      <div><button class="btn btn-p btn-s">${r ? "Update rating" : "Save rating"}</button></div></form>`;
+  return `<a class="link" href="#/models">← The Model Index</a>
+    <article class="card pad stack" style="gap:14px">
+      <span class="eyebrow-mono">Model Index · ${esc(m.maker)}</span>
+      <h1 class="t-page">${esc(m.name)}</h1>
+      <div class="mstats"><div><b>${m.rating_count ? Number(m.rating_avg).toFixed(1) : "–"}</b><span>reader rating · ${plural(m.rating_count, "rating")}</span></div>
+        <div><b>${esc(m.best_for || "–")}</b><span>best for, say readers</span></div>
+        <div><b>${fmt(m.mentions_week)}</b><span>stories this week ${trendArrow(m)}</span></div></div>
+      ${m.url ? `<a class="link" href="${esc(m.url)}" target="_blank" rel="noopener noreferrer nofollow">Visit ${esc(m.name)} ↗</a>` : ""}
+      ${form}
+    </article>
+    <section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">${esc(m.name)} in the news</h2>${(related.data || []).map((s) => `<a class="list-row" href="#/news/${s.id}"><b>${esc(s.title)}</b><span class="meta">${ago(s.published_at || s.created_at)}</span></a>`).join("") || `<p class="meta">No recent stories.</p>`}</section>
+    ${await commentsSection("model", m.id, "Reviews and tips", "reply", "How do you use " + m.name + "? What is it good or bad at?")}`;
+}
 async function pageKind(kind) {
   const isQ = kind === "question";
   const key = isQ ? "questions" : "discussions";
@@ -669,12 +841,14 @@ async function pageUser(username) {
     sb.from("posts").select("id, kind, title, created_at, comment_count, status").eq("author_id", u.id).order("created_at", { ascending: false }).limit(20),
     sb.from("comments").select("id, target_type, target_id, body, score, created_at").eq("author_id", u.id).order("created_at", { ascending: false }).limit(20),
   ]);
-  const href = (c) => c.target_type === "post" ? "#/p/" + c.target_id : c.target_type === "story" ? "#/news/" + c.target_id : c.target_type === "poll" ? "#/polls/" + c.target_id : "#/stocks/" + c.target_id;
+  const href = (c) => c.target_type === "post" ? "#/p/" + c.target_id : c.target_type === "story" ? "#/news/" + c.target_id : c.target_type === "poll" ? "#/polls/" + c.target_id
+    : c.target_type === "prediction" ? "#/predict/" + c.target_id : c.target_type === "model" ? "#/models/" + c.target_id : "#/stocks/" + c.target_id;
   const p = me();
   document.title = nameOf(u) + " · " + SITE;
   return `<header class="card pad row" style="gap:18px">${avatar(u, 72)}
       <div style="flex:1 1 220px;min-width:0"><h1 class="h-page">${esc(nameOf(u))}</h1>
         <p class="meta">@${esc(u.username)} · ${plural(u.reputation, "point")} · joined ${new Date(u.created_at).toLocaleDateString("en-US", { month: "long", year: "numeric" })}</p>
+        ${u.forecasts_scored ? `<p class="meta" style="margin-top:4px">Forecasting: ${plural(u.forecast_points, "point")} · ${u.forecasts_right} of ${u.forecasts_scored} calls right${isTopForecaster(u) ? ` <span class="badge-fc">Top forecaster</span>` : ""}</p>` : ""}
         ${u.bio ? `<p class="lead" style="margin-top:6px">${esc(u.bio)}</p>` : ""}
         ${u.is_banned ? `<p class="err" style="margin-top:6px">This account is suspended.</p>` : ""}</div>
       ${p && p.id === u.id ? `<a class="btn btn-o" href="#/settings">Edit profile</a>` : ""}
@@ -743,7 +917,7 @@ async function pageLogin() {
 async function pageAdmin() {
   const p = me();
   if (!p || !p.is_admin) return `<div class="card pad stack"><h1 class="h-page">Admins only</h1><p class="lead">Log in with the admin account to open this page.</p></div>`;
-  const [pending, fPosts, fComments, reports, live, sources, tickers, members, stories] = await Promise.all([
+  const [pending, fPosts, fComments, reports, live, sources, tickers, members, stories, pPreds, livePreds, allModels] = await Promise.all([
     sb.from("polls").select("*, poll_options(*)").eq("status", "pending").order("created_at", { ascending: false }),
     sb.from("posts").select("id, title, body, author_id").eq("status", "flagged").order("created_at", { ascending: false }).limit(50),
     sb.from("comments").select("id, body, author_id, target_type, target_id").eq("status", "flagged").order("created_at", { ascending: false }).limit(50),
@@ -753,7 +927,11 @@ async function pageAdmin() {
     sb.from("tickers").select("*").order("symbol"),
     sb.from("profiles").select("id, username, display_name, avatar_url, reputation, is_admin, is_banned, created_at").order("created_at", { ascending: false }).limit(30),
     sb.from("news_stories").select("id, title, is_hidden, source_count, created_at").order("created_at", { ascending: false }).limit(15),
+    sb.from("predictions").select("*").eq("status", "pending").order("created_at", { ascending: false }),
+    sb.from("predictions").select("id, question, resolves_by, forecast_count, crowd_prob, criteria").eq("status", "live").order("resolves_by"),
+    sb.from("models").select("*").order("name"),
   ]);
+  const today = new Date().toISOString().slice(0, 10);
   const rep = reports.data || [];
   const [rPosts, rComments] = await Promise.all([
     rep.some((r) => r.target_type === "post") ? sb.from("posts").select("id, title, body").in("id", rep.filter((r) => r.target_type === "post").map((r) => r.target_id)) : { data: [] },
@@ -765,7 +943,7 @@ async function pageAdmin() {
   const flagged = [...(fPosts.data || []).map((x) => ({ type: "post", id: x.id, text: x.title + "\n" + x.body, author: x.author_id })), ...(fComments.data || []).map((x) => ({ type: "comment", id: x.id, text: x.body, author: x.author_id }))];
   const actionsUrl = CONFIG.githubRepo ? `https://github.com/${CONFIG.githubRepo}/actions` : null;
   return `<header><h1 style="font-size:30px;font-weight:800">Admin</h1><p class="lead">Review polls, handle reports, and manage sources, tickers and members.</p></header>
-    ${sec("Automation", `<p class="lead">News is collected and checked every 30 minutes, new polls are written every 6 hours, and a "Discussion of the day" is posted each morning. These run on GitHub.</p>
+    ${sec("Automation", `<p class="lead">Everything runs by itself on GitHub: news and moderation (including member reports) every 30 minutes; new polls, new predictions, settling predictions from the news and Model Index counts every 6 hours; and a "Discussion of the day" each morning. Nothing on this page needs your attention unless you want to step in.</p>
       ${actionsUrl ? `<a class="btn btn-o" style="align-self:flex-start" href="${esc(actionsUrl)}" target="_blank" rel="noopener noreferrer">Run jobs now on GitHub ↗</a>` : `<p class="meta">Add your repository name to docs/config.js to get a "Run jobs now" button here.</p>`}`)}
     ${sec("Polls waiting for review", (pending.data || []).map((x) => `<form class="box" data-form="approve" data-id="${x.id}">
         <p class="meta">${esc(topicLabel(x.topic))} · created ${ago(x.created_at)} ago</p>
@@ -773,6 +951,27 @@ async function pageAdmin() {
         <label class="sr" for="ad-${x.id}">Context</label><textarea class="field" id="ad-${x.id}" name="desc" rows="2">${esc(x.description || "")}</textarea>
         <ul style="margin:0;padding-left:20px;color:var(--ink-2)">${[...x.poll_options].sort((a, b) => a.position - b.position).map((o) => `<li>${esc(o.label)}</li>`).join("")}</ul>
         <span class="row"><button class="btn btn-p btn-s">Approve and publish</button><button type="button" class="btn btn-o btn-s" data-act="poll-status" data-id="${x.id}" data-val="rejected">Reject</button></span></form>`).join("") || `<p class="meta">Nothing to review.</p>`, (pending.data || []).length)}
+    ${sec("Predictions waiting for review", (pPreds.data || []).map((x) => `<form class="box" data-form="pred-review" data-id="${x.id}">
+        <p class="meta">${esc(topicLabel(x.topic))} · resolves ${longDate(x.resolves_by)} · created ${ago(x.created_at)} ago</p>
+        <label class="sr" for="pq-${x.id}">Question</label><input class="field" id="pq-${x.id}" name="question" value="${esc(x.question)}" style="font-weight:700">
+        <label class="label" for="pc-${x.id}">Counts as YES if</label><textarea class="field" id="pc-${x.id}" name="criteria" rows="2">${esc(x.criteria || "")}</textarea>
+        <span class="row"><button class="btn btn-p btn-s">Approve and publish</button><button type="button" class="btn btn-o btn-s" data-act="pred-reject" data-id="${x.id}">Reject</button></span></form>`).join("") || `<p class="meta">Nothing to review.</p>`, (pPreds.data || []).length)}
+    ${sec("Settle predictions", `<p class="meta">The robot checks the news and settles these by itself (YES as soon as it's confirmed, NO a couple of days after the deadline, cancelled if still unclear 3 weeks later). You only need this if you want to settle one by hand.</p>
+      ${(livePreds.data || []).map((x) => `<form class="box" data-form="pred-resolve" data-id="${x.id}">
+        <p class="meta">${x.resolves_by <= today ? `<span class="chip c-warn">Due</span> ` : ""}Resolves ${longDate(x.resolves_by)} · ${plural(x.forecast_count, "forecast")} · crowd ${x.crowd_prob ?? "–"}%</p>
+        <a class="title-link" style="font-weight:700" href="#/predict/${x.id}">${esc(x.question)}</a>
+        ${x.criteria ? `<p class="meta">YES if: ${esc(x.criteria)}</p>` : ""}
+        <div class="row"><label class="sr" for="po-${x.id}">Result</label><select class="field" style="flex:0 1 200px" id="po-${x.id}" name="outcome" required><option value="" selected disabled>Result…</option><option value="yes">YES, it happened</option><option value="no">NO</option><option value="void">Cancel (unclear)</option></select>
+          <label class="sr" for="pn-${x.id}">Note</label><input class="field" style="flex:1 1 220px" id="pn-${x.id}" name="note" maxlength="600" placeholder="Short note with the source (optional)">
+          <button class="btn btn-p btn-s">Settle</button></div></form>`).join("") || `<p class="meta">No open predictions.</p>`}`, (livePreds.data || []).filter((x) => x.resolves_by <= today).length + " due")}
+    ${sec("Write a prediction", `<form class="stack" data-form="pred-create">
+        <div><label class="label" for="ncq">Question (yes/no)</label><input class="field" id="ncq" name="question" minlength="10" maxlength="200" required placeholder="e.g. Will a new open-weight model beat the top closed model on a major benchmark by June 30?"></div>
+        <div><label class="label" for="ncc">Counts as YES if</label><textarea class="field" id="ncc" name="criteria" rows="2" maxlength="800"></textarea></div>
+        <div class="row" style="align-items:flex-end"><div style="flex:1 1 200px">${topicSelect("nct")}</div><div style="flex:1 1 200px"><label class="label" for="ncd">Resolves on</label><input class="field" id="ncd" name="date" type="date" required min="${today}"></div>
+          <button class="btn btn-p">Publish prediction</button></div></form>`)}
+    ${sec("Model Index", `<div class="row">${(allModels.data || []).map((m) => `<button type="button" class="pill" style="${m.active ? "" : "opacity:.5"}" aria-pressed="${m.active}" data-act="model-toggle" data-id="${m.id}" data-val="${!m.active}">${esc(m.name)}</button>`).join("")}</div><p class="meta">Tap a model to hide or show it.</p>
+      <form class="row" data-form="model-add"><label class="sr" for="mn">Model name</label><input class="field" style="flex:1 1 150px" id="mn" name="name" required placeholder="Model name"><label class="sr" for="mm">Maker</label><input class="field" style="flex:1 1 130px" id="mm" name="maker" required placeholder="Company">
+        <label class="sr" for="ma">Other names</label><input class="field" style="flex:2 1 200px" id="ma" name="aliases" placeholder="Other names in the news, comma-separated"><label class="sr" for="mu">Website</label><input class="field" style="flex:1 1 180px" id="mu" name="url" type="url" placeholder="https:// (optional)"><button class="btn btn-p">Add model</button></form>`)}
     ${sec("Flagged by automatic checks", flagged.map((f) => `<div class="box"><p class="meta">${f.type} by ${esc(nameOf(people.get(f.author)))}</p><p class="body clamp">${esc(f.text)}</p>
         <span class="row">${f.type === "post" ? `<a class="btn btn-o btn-s" href="#/p/${f.id}">Open</a>` : ""}<button type="button" class="btn btn-p btn-s" data-act="mod" data-type="${f.type}" data-id="${f.id}" data-val="visible">Approve</button><button type="button" class="btn btn-o btn-s" data-act="mod" data-type="${f.type}" data-id="${f.id}" data-val="hidden">Hide</button></span></div>`).join("") || `<p class="meta">Nothing flagged.</p>`, flagged.length)}
     ${sec("Reports from members", rep.map((r) => `<div class="box"><p class="meta">${r.target_type} · reported by ${esc(nameOf(people.get(r.reporter_id)))} ${ago(r.created_at)} ago · reason: <span style="color:var(--ink)">${esc(r.reason)}</span></p><p class="body clamp">${esc(text.get(r.target_id) || "(already deleted)")}</p>
@@ -796,15 +995,15 @@ const pageTerms = () => prose("Terms of service", `
   <p class="lead">These terms apply to your use of ${esc(SITE)}, operated by [YOUR NAME OR COMPANY], [YOUR CITY, STATE]. By using the site you agree to them.</p>
   <h2 class="section-h">Your account</h2><p class="lead">You must be at least 13 years old. Keep your login secure; you are responsible for activity on your account.</p>
   <h2 class="section-h">Your content</h2><p class="lead">You own what you post. By posting, you let us host and display it on the site. Follow the community guidelines; we may remove content or suspend accounts that don't.</p>
-  <h2 class="section-h">AI-generated content</h2><p class="lead">News summaries, polls and daily discussions are written automatically by AI from third-party sources and may contain mistakes. Always check the original source.</p>
+  <h2 class="section-h">AI-generated content</h2><p class="lead">News summaries, polls, predictions, prediction results and daily discussions are produced automatically by AI from third-party sources and may contain mistakes. Always check the original source. Predictions are a free game with no money or prizes.</p>
   <h2 class="section-h">Not financial advice</h2><p class="lead">Stock discussions are for information only. Nothing on the site is investment, legal or other professional advice.</p>
   <h2 class="section-h">Disclaimers</h2><p class="lead">The site is provided "as is" without warranties. To the extent the law allows, we are not liable for indirect or consequential losses from using it.</p>
   <h2 class="section-h">Contact</h2><p class="lead">[CONTACT EMAIL]</p>`);
 const pagePrivacy = () => prose("Privacy policy", `
   <p class="meta">Last updated [DATE]. Starter text: have it reviewed before launch.</p>
   <h2 class="section-h">What we collect</h2><ul><li>Your email address and, if you sign in with Google, your name and profile picture.</li><li>What you post: questions, discussions, replies, votes, polls and reports.</li><li>Login cookies and basic technical data needed to run the site.</li></ul>
-  <h2 class="section-h">How we use it</h2><ul><li>To run your account and show your posts.</li><li>To keep the site safe: posts are checked by an automated AI moderation service (Anthropic).</li><li>We do not sell your personal information.</li></ul>
-  <h2 class="section-h">Service providers</h2><p class="lead">GitHub (website hosting and scheduled jobs), Supabase (database and login) and Anthropic (AI summaries and moderation) process data on our behalf.</p>
+  <h2 class="section-h">How we use it</h2><ul><li>To run your account and show your posts.</li><li>To keep the site safe: posts are checked by automated AI moderation (Groq, or an open-source model run on GitHub).</li><li>We do not sell your personal information.</li></ul>
+  <h2 class="section-h">Service providers</h2><p class="lead">GitHub (website hosting and scheduled jobs), Supabase (database and login) and Groq (AI summaries and moderation) process data on our behalf.</p>
   <h2 class="section-h">Your choices</h2><p class="lead">You can edit your profile and delete your posts and replies. To delete your account, email [CONTACT EMAIL].</p>`);
 
 /* ---------------------------------------------------------------- router */
@@ -830,6 +1029,8 @@ async function render({ keepScroll = false } = {}) {
       : head === "news" ? (a ? await pageStory(a) : await pageNews())
       : head === "stocks" ? (a ? await pageTicker(a) : await pageStocks())
       : head === "polls" ? (a ? await pagePoll(a) : await pagePolls())
+      : head === "predict" ? await pagePredict(a)
+      : head === "models" ? (a ? await pageModel(a) : await pageModels())
       : head === "discussions" ? await pageKind("discussion")
       : head === "questions" ? await pageKind("question")
       : head === "p" ? await pagePost(a)
@@ -947,6 +1148,8 @@ document.addEventListener("click", async (e) => {
     case "source-toggle": return run(sb.from("news_sources").update({ active: val === "true" }).eq("id", id));
     case "source-del": return run(sb.from("news_sources").delete().eq("id", id), "Source removed.");
     case "ticker-toggle": return run(sb.from("tickers").update({ active: val === "true" }).eq("symbol", id));
+    case "pred-reject": return run(sb.rpc("review_prediction", { p_id: id, p_approve: false, p_question: null, p_criteria: null }), "Prediction rejected.");
+    case "model-toggle": return run(sb.from("models").update({ active: val === "true" }).eq("id", id));
     case "story-hide": return run(sb.from("news_stories").update({ is_hidden: val === "true" }).eq("id", id), val === "true" ? "Story hidden." : "Story visible again.");
   }
 });
@@ -1027,6 +1230,50 @@ document.addEventListener("submit", async (e) => {
         await refresh();
       })());
     }
+    if (kind === "forecast") {
+      if (!S.userId) { location.hash = "#/login"; return; }
+      const prob = Math.min(99, Math.max(1, Number(fd.get("prob")) || 50));
+      const { error } = f.dataset.has === "1"
+        ? await sb.from("forecasts").update({ prob }).eq("prediction_id", f.dataset.id).eq("user_id", S.userId)
+        : await sb.from("forecasts").insert({ prediction_id: f.dataset.id, user_id: S.userId, prob });
+      toast(error ? errText(error) : `Forecast saved: ${prob}% yes.`);
+      return refresh();
+    }
+    if (kind === "model-rate") {
+      if (!S.userId) { location.hash = "#/login"; return; }
+      const stars = Number(fd.get("stars")), best_for = String(fd.get("best_for") || "") || null;
+      if (!stars) { toast("Pick 1 to 5 stars."); return; }
+      const { error } = f.dataset.has === "1"
+        ? await sb.from("model_ratings").update({ stars, best_for }).eq("model_id", f.dataset.id).eq("user_id", S.userId)
+        : await sb.from("model_ratings").insert({ model_id: f.dataset.id, user_id: S.userId, stars, best_for });
+      toast(error ? errText(error) : "Thanks for rating.");
+      return refresh();
+    }
+    if (kind === "pred-review") {
+      const { error } = await sb.rpc("review_prediction", { p_id: f.dataset.id, p_approve: true, p_question: String(fd.get("question") || ""), p_criteria: String(fd.get("criteria") || "") });
+      toast(error ? errText(error) : "Prediction published.");
+      return refresh();
+    }
+    if (kind === "pred-resolve") {
+      const o = String(fd.get("outcome") || "");
+      if (!o) { toast("Pick a result first."); return; }
+      const { error } = await sb.rpc("resolve_prediction", { p_id: f.dataset.id, p_outcome: o === "void" ? null : o === "yes", p_note: String(fd.get("note") || "") });
+      toast(error ? errText(error) : o === "void" ? "Prediction cancelled." : "Settled. Points added.");
+      return refresh();
+    }
+    if (kind === "pred-create") {
+      const { data, error } = await sb.rpc("create_prediction", { p_question: String(fd.get("question") || ""), p_criteria: String(fd.get("criteria") || ""), p_topic: String(fd.get("topic") || "general"), p_resolves_by: String(fd.get("date") || "") });
+      if (error) { toast(errText(error)); return refresh(); }
+      toast("Prediction published."); location.hash = "#/predict/" + data; return;
+    }
+    if (kind === "model-add") {
+      const name = String(fd.get("name") || "").trim();
+      const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      const aliases = String(fd.get("aliases") || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const { error } = await sb.from("models").insert({ id, name, maker: String(fd.get("maker") || "").trim(), aliases: aliases.length ? aliases : [name], url: String(fd.get("url") || "").trim() || null });
+      toast(error ? (error.code === "23505" ? "That model is already in the index." : errText(error)) : "Model added. Mentions are counted on the next 6-hour run.");
+      return refresh();
+    }
     if (kind === "source") {
       const { error } = await sb.from("news_sources").insert({ name: String(fd.get("name")).trim(), feed_url: String(fd.get("url")).trim() });
       toast(error ? errText(error) : "Source added. It will be read on the next news run.");
@@ -1040,6 +1287,11 @@ document.addEventListener("submit", async (e) => {
   } finally {
     if (button && document.body.contains(button)) button.disabled = false;
   }
+});
+
+document.addEventListener("input", (e) => {
+  const r = e.target.closest("input[data-out]");
+  if (r) { const o = document.getElementById(r.dataset.out); if (o) o.textContent = r.value + "% yes"; }
 });
 
 /* ---------------------------------------------------------------- start */
