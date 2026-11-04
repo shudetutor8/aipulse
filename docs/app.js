@@ -387,16 +387,23 @@ function trendArrow(m) {
   return d > 0 ? `<span class="up" title="Up from ${m.mentions_prev_week} last week">▲ ${d}</span>` : d < 0 ? `<span class="down" title="Down from ${m.mentions_prev_week} last week">▼ ${-d}</span>` : "";
 }
 const ratingText = (m) => (m.rating_count ? `${Number(m.rating_avg).toFixed(1)} / 5 <span class="meta">· ${fmt(m.rating_count)}</span>` : `<span class="meta">Not rated yet</span>`);
+function benchCell(m) {
+  if (m.bench_score == null) return `<span class="meta">–</span>`;
+  return `<span class="bench"><b>${Number(m.bench_score)}</b><span class="bench-bar" aria-hidden="true"><span style="width:${Math.min(100, Number(m.bench_score))}%"></span></span></span>`;
+}
 function modelTable(models, start = 0) {
-  return `<div class="table-box"><table class="mx"><thead><tr><th>#</th><th>Model</th><th>Reader rating</th><th>Best for</th><th>Mentions this week</th></tr></thead><tbody>
+  return `<div class="table-box"><table class="mx"><thead><tr><th>#</th><th>Model</th><th>Latest model</th><th title="Artificial Analysis Intelligence Index">Benchmark score</th><th>Reader rating</th><th>Mentions this week</th></tr></thead><tbody>
     ${models.map((m, i) => `<tr><td class="mono">${start + i + 1}</td><td><a class="title-link" href="#/models/${m.id}"><b>${esc(m.name)}</b></a><div class="meta">${esc(m.maker)}</div></td>
-      <td>${ratingText(m)}</td><td>${m.best_for ? `<span class="chip c-news">${esc(m.best_for)}</span>` : `<span class="meta">–</span>`}</td>
+      <td>${esc(m.latest_model || "–")}</td><td>${benchCell(m)}</td>
+      <td>${ratingText(m)}${m.best_for ? `<div><span class="chip c-news" style="height:22px;font-size:11px;margin-top:4px">${esc(m.best_for)}</span></div>` : ""}</td>
       <td class="mono">${fmt(m.mentions_week)} ${trendArrow(m)}</td></tr>`).join("")}
   </tbody></table></div>`;
 }
-const sortModels = (list, by) => [...list].sort(by === "news"
-  ? (a, b) => b.mentions_week - a.mentions_week || a.name.localeCompare(b.name)
-  : (a, b) => (b.rating_count ? 1 : 0) - (a.rating_count ? 1 : 0) || Number(b.rating_avg || 0) - Number(a.rating_avg || 0) || b.rating_count - a.rating_count || b.mentions_week - a.mentions_week);
+const benchNote = (list) => { const m = list.find((x) => x.bench_updated); return m ? `Benchmark score: <a class="link" href="https://artificialanalysis.ai/leaderboards/models" target="_blank" rel="noopener noreferrer">Artificial Analysis Intelligence Index</a> (independent tests of reasoning, knowledge, math and coding; higher is better), best version of each model, checked ${longDate(m.bench_updated)}. Reader ratings come from signed-in readers. Mentions count this week's AI stories on ${esc(SITE)} that name the model.` : ""; };
+const sortModels = (list, by) => [...list].sort(
+  by === "news" ? (a, b) => b.mentions_week - a.mentions_week || a.name.localeCompare(b.name)
+  : by === "rating" ? (a, b) => (b.rating_count ? 1 : 0) - (a.rating_count ? 1 : 0) || Number(b.rating_avg || 0) - Number(a.rating_avg || 0) || b.rating_count - a.rating_count || b.mentions_week - a.mentions_week
+  : (a, b) => (b.bench_score != null) - (a.bench_score != null) || Number(b.bench_score || 0) - Number(a.bench_score || 0) || b.mentions_week - a.mentions_week);
 
 /* ---------------------------------------------------------------- comments */
 function commentForm(tt, tid, parent, placeholder) {
@@ -472,7 +479,13 @@ function shell(route, content, rail, railHtml) {
     </div></div>
     <footer class="footer"><div class="wrap"><p style="max-width:60ch">© ${new Date().getFullYear()} ${esc(SITE)}. News is summarized by AI from the linked sources. Polls, predictions and daily discussions are generated automatically. Predictions are for fun, with no money involved. Nothing here is investment advice.</p>
       ${followLinks()}
-      <nav aria-label="Footer"><a href="#/guidelines">Community guidelines</a><a href="#/terms">Terms</a><a href="#/privacy">Privacy</a></nav></div></footer>`;
+      <nav aria-label="Footer"><a href="#/guidelines">Community guidelines</a><a href="#/terms">Terms</a><a href="#/privacy">Privacy</a></nav></div></footer>
+    <div class="reader" id="reader" role="dialog" aria-modal="true" aria-labelledby="rd-title" hidden>
+      <div class="reader-bar"><div class="reader-who"><span class="eyebrow-mono" id="rd-src"></span><span id="rd-title" class="reader-title"></span></div>
+        <div class="row" style="flex-wrap:nowrap;gap:6px"><button type="button" class="btn btn-o btn-s" data-act="reader-full">Full screen</button><button type="button" class="btn btn-p btn-s" data-act="reader-close" id="rd-close">Close ✕</button></div></div>
+      <iframe id="rd-frame" class="reader-frame" title="Original article" src="about:blank" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
+      <p class="reader-note">This is the publisher's own page, shown inside ${esc(SITE)}. If it stays blank, the publisher doesn't allow this; use our summary instead.</p>
+    </div>`;
 }
 function railView(r) {
   return `<aside class="rail">
@@ -658,10 +671,10 @@ async function pageHome() {
         <div class="pred-cards">${d.preds.length ? d.preds.map((x) => predCard(x, myFc.get(x.id))).join("") : `<div class="card pad stack"><p class="lead">New prediction questions are written from the news every few hours.</p><a class="link" href="#/predict">See all predictions →</a></div>`}</div>
         ${leadersAside(d.leaders)}
       </div></section>`;
-    const topModels = sortModels(d.models, "rating").slice(0, 5);
+    const topModels = sortModels(d.models, "bench").slice(0, 5);
     const modelSection = topModels.length ? `<section class="stack" aria-label="The Model Index">
-      <div class="sec-head"><h2>The Model Index</h2><span class="meta">How readers rate the AI tools they actually use, and how often each is in the news</span></div>
-      <div class="card pad stack">${modelTable(topModels)}<a class="link" href="#/models">Full index and rate the models you use →</a></div></section>` : "";
+      <div class="sec-head"><h2>The Model Index</h2><span class="meta">Independent benchmark scores, reader ratings and news buzz for the top AI models</span></div>
+      <div class="card pad stack">${modelTable(topModels)}<p class="meta">${benchNote(d.models)}</p><a class="link" href="#/models">Full index and rate the models you use →</a></div></section>` : "";
     top = `${hero}${predSection}
       ${debate || pollCardHtml ? `<section class="grid2">${debate}${pollCardHtml}</section>` : ""}
       <section class="grid2">${questionCard}${side}</section>
@@ -721,6 +734,7 @@ async function pageStory(id) {
       ${hypeBar(s)}
       ${rateButtons(s.id, myRating.data ? myRating.data.value : null)}
       ${shareBar("#/news/" + s.id, s.title)}
+      ${(links || []).some((l) => l.frameable && l.real_url) ? `<div class="readers"><h2 class="eyebrow-mono">Read the original here</h2><div class="row">${[...new Map(links.filter((l) => l.frameable && l.real_url).map((l) => [l.source_name, l])).values()].slice(0, 6).map((l) => `<button type="button" class="btn btn-o btn-s" data-act="reader" data-url="${esc(l.real_url)}" data-src="${esc(l.source_name)}" data-title="${esc(l.title || s.title)}">${icon("news", 16)} ${esc(l.source_name)}</button>`).join("")}</div></div>` : ""}
       ${(links || []).length ? `<p class="credits"><span>Reported by</span> ${[...new Map(links.map((l) => [l.source_name, l])).values()].map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${esc(l.title)}">${esc(l.source_name)}</a>`).join(" · ")}</p>` : ""}
     </article>
     ${(talks || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">Discussion of the day</h2>${talks.map((p) => `<a class="list-row" href="#/p/${p.id}"><b>${esc(p.title)}</b><span class="meta">${plural(p.comment_count, "reply", "replies")}</span></a>`).join("")}</section>` : ""}
@@ -853,13 +867,13 @@ async function pagePrediction(id) {
     ${live ? await commentsSection("prediction", p.id, "Discussion", "reply", "What makes you think so? Share your reasoning.") : `<p class="note c-warn">This prediction is waiting for review. <a class="link" href="#/admin">Open admin</a></p>`}`;
 }
 async function pageModels() {
-  const by = ui.sort.models || "rating";
+  const by = ui.sort.models || "bench";
   const { data } = await sb.from("models").select("*").eq("active", true);
   const list = sortModels(data || [], by);
-  return `${header("The Model Index", "How readers rate the AI tools they actually use, and how often each one is in the AI news this week. Open a model to rate it.")}
-    ${tabs("models", [["rating", "Top rated"], ["news", "Most in the news"]])}
+  return `${header("The Model Index", "The top AI models compared: independent benchmark scores, ratings from readers who use them, and how often each is in this week's AI news. Open a model to rate it.")}
+    ${tabs("models", [["bench", "Benchmark score"], ["rating", "Reader rating"], ["news", "Most in the news"]])}
     <section class="card pad stack">${list.length ? modelTable(list) : `<p class="meta">No models yet.</p>`}
-      <p class="meta">Ratings come from signed-in readers. "Mentions" counts this week's AI stories on ${esc(SITE)} that name the model; ▲▼ compares with last week.</p></section>`;
+      <p class="meta">${benchNote(list)} ▲▼ compares mentions with last week.</p></section>`;
 }
 async function pageModel(id) {
   if (!/^[a-z0-9-]{2,40}$/.test(id || "")) return notFound();
@@ -881,7 +895,7 @@ async function pageModel(id) {
     <article class="card pad stack" style="gap:14px">
       <span class="eyebrow-mono">Model Index · ${esc(m.maker)}</span>
       <h1 class="t-page">${esc(m.name)}</h1>
-      <div class="mstats"><div><b>${m.rating_count ? Number(m.rating_avg).toFixed(1) : "–"}</b><span>reader rating · ${plural(m.rating_count, "rating")}</span></div>
+      <div class="mstats"><div><b>${m.bench_score != null ? Number(m.bench_score) : "–"}</b><span>benchmark score${m.latest_model ? " · " + esc(m.latest_model) : ""}</span></div><div><b>${m.rating_count ? Number(m.rating_avg).toFixed(1) : "–"}</b><span>reader rating · ${plural(m.rating_count, "rating")}</span></div>
         <div><b>${esc(m.best_for || "–")}</b><span>best for, say readers</span></div>
         <div><b>${fmt(m.mentions_week)}</b><span>stories this week ${trendArrow(m)}</span></div></div>
       ${form}
@@ -1280,6 +1294,22 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "logout": await sb.auth.signOut(); return;
+    case "reader": {
+      const r = document.getElementById("reader"); if (!r) return;
+      document.getElementById("rd-src").textContent = el.dataset.src || "";
+      document.getElementById("rd-title").textContent = el.dataset.title || "";
+      document.getElementById("rd-frame").src = el.dataset.url;
+      r.hidden = false; document.body.classList.add("noscroll"); READER.back = el;
+      document.getElementById("rd-close").focus(); return;
+    }
+    case "reader-close": closeReader(); return;
+    case "reader-full": {
+      const r = document.getElementById("reader");
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      else if (r.requestFullscreen) r.requestFullscreen().catch(() => toast("Full screen isn't available in this browser."));
+      else if (r.webkitRequestFullscreen) r.webkitRequestFullscreen();
+      return;
+    }
     case "copy-link": toast((await copyText(pageUrl(el.dataset.url))) ? "Link copied." : "Couldn't copy. Copy it from the address bar."); return;
     case "share-native":
       try { await navigator.share({ title: el.dataset.title, text: el.dataset.title, url: pageUrl(el.dataset.url) }); } catch (e) { /* closed */ }
@@ -1529,8 +1559,21 @@ document.addEventListener("input", (e) => {
   if (r) { const o = document.getElementById(r.dataset.out); if (o) o.textContent = r.value + "% yes"; }
 });
 
+const READER = { back: null };
+function closeReader() {
+  const r = document.getElementById("reader"); if (!r || r.hidden) return;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  r.hidden = true; document.body.classList.remove("noscroll");
+  document.getElementById("rd-frame").src = "about:blank";
+  if (READER.back && document.body.contains(READER.back)) READER.back.focus();
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeReader(); });
+document.addEventListener("fullscreenchange", () => {
+  const b = document.querySelector('[data-act="reader-full"]'); if (b) b.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+});
+
 /* ---------------------------------------------------------------- start */
-window.addEventListener("hashchange", () => { ui.reply = null; ui.report = null; ui.confirm = null; ui.err = {}; ui.ok.profile = ""; render(); });
+window.addEventListener("hashchange", () => { closeReader(); ui.reply = null; ui.report = null; ui.confirm = null; ui.err = {}; ui.ok.profile = ""; render(); });
 sb.auth.onAuthStateChange((event) => {
   if (event === "PASSWORD_RECOVERY") { ui.recovery = true; setTimeout(async () => { await loadProfile(); location.hash = "#/reset"; render(); }, 0); return; }
   if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
