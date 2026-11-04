@@ -672,6 +672,17 @@ export async function resolveGoogleNews(url) {
   if (!/^https?:\/\//.test(real || "")) throw new Error("no address");
   return real;
 }
+// The picture a news page shows when it is shared (og:image), used as our story picture.
+export function shareImage(html, pageUrl) {
+  const m = html.match(/<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image(?::src)?)["'][^>]*>/i);
+  const c = m && m[0].match(/content=["']([^"']+)["']/i);
+  if (!c) return null;
+  try {
+    const u = new URL(c[1].replace(/&amp;/g, "&"), pageUrl);
+    if (u.protocol !== "https:" || /logo|favicon|placeholder|default[-_]?(image|share)|google\.com\/images|gstatic/i.test(u.href)) return null;
+    return u.href.slice(0, 1000);
+  } catch (e) { return null; }
+}
 export function extractArticle(html, url) {
   const dom = new JSDOM(html, { url, virtualConsole: new VirtualConsole() });
   const art = new Readability(dom.window.document, { charThreshold: 400 }).parse();
@@ -697,18 +708,40 @@ async function readSources(links) {
       if (PAYWALLED.test(host)) continue;
       const { text: html, url } = await fetchText(real);
       const body = extractArticle(html, url);
-      if (body.length >= 700) out.push({ name: l.source_name, url: real, text: body.slice(0, 3500) });
+      if (body.length >= 700) out.push({ name: l.source_name, url: real, text: body.slice(0, 3500), image: shareImage(html, url) });
     } catch (e) { /* unreadable source (blocked, paywall, timeout): try the next one */ }
   }
   return out;
 }
+// Pictures for the top stories (Google News items come without one): the first readable source's share picture.
+async function addImages() {
+  const { data: rows } = await db.from("news_stories").select("id, title").is("image_url", null).eq("image_checked", false).eq("is_hidden", false)
+    .gte("created_at", new Date(Date.now() - 36 * H).toISOString()).order("source_count", { ascending: false }).limit(10);
+  let found = 0;
+  for (const st of rows || []) {
+    const { data: links } = await db.from("news_links").select("url").eq("story_id", st.id).limit(4);
+    let img = null;
+    for (const l of links || []) {
+      try {
+        const real = await resolveGoogleNews(l.url);
+        const { text, url } = await fetchText(real);
+        img = shareImage(text, url);
+        if (img) break;
+      } catch (e) { /* try the next source */ }
+    }
+    await db.from("news_stories").update(img ? { image_url: img, image_checked: true } : { image_checked: true }).eq("id", st.id);
+    if (img) found++;
+  }
+  log(`Pictures: found ${found} for ${(rows || []).length} stories without one`);
+}
 async function jobArticles() {
+  try { await addImages(); } catch (e) { log("Pictures: skipped (" + e.message + ")"); }
   if (!claude || usingLocalOnly() || claude.groqDown) return log("Articles: waiting for the main AI (Groq); skipping");
   const dayAgo = new Date(Date.now() - 24 * H).toISOString();
   const { count: today } = await db.from("news_stories").select("id", { count: "exact", head: true }).gte("article_at", dayAgo);
   const room = Math.min(ARTICLES_PER_RUN, ARTICLES_PER_DAY - (today || 0));
   if (room <= 0) return log(`Articles: daily limit of ${ARTICLES_PER_DAY} reached`);
-  const { data: cands } = await db.from("news_stories").select("id, title, summary, topic, source_count, article_tries")
+  const { data: cands } = await db.from("news_stories").select("id, title, summary, topic, source_count, article_tries, image_url")
     .is("article", null).eq("is_hidden", false).lt("article_tries", 2).gte("created_at", new Date(Date.now() - 36 * H).toISOString())
     .order("source_count", { ascending: false }).order("created_at", { ascending: false }).limit(12);
   let written = 0;
@@ -743,6 +776,7 @@ async function jobArticles() {
         sources: sources.map((s) => ({ name: s.name, url: s.url })) },
       details: { key_points: points, why_it_matters: str(res.why_it_matters, 400) || null },
       article_at: new Date().toISOString(),
+      ...(sources.find((s) => s.image) && !st.image_url ? { image_url: sources.find((s) => s.image).image } : {}),
     }).eq("id", st.id);
     if (error) log("  could not save article:", error.message); else { written++; log(`  wrote full article (${wordCount} words): ${st.title}`); }
   }
