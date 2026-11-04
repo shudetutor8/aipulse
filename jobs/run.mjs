@@ -6,8 +6,9 @@
 //   node run.mjs all                everything
 //
 // Needs these environment variables (GitHub → Settings → Secrets and variables → Actions):
-//   SUPABASE_URL, SUPABASE_SECRET_KEY, ANTHROPIC_API_KEY
-// Optional: ANTHROPIC_MODEL (default claude-haiku-5-5), AUTO_PUBLISH_POLLS ("true" to skip review), SITE_URL
+//   SUPABASE_URL, SUPABASE_SECRET_KEY
+//   and ONE AI key: GROQ_API_KEY (free, console.groq.com) or ANTHROPIC_API_KEY (paid)
+// Optional: GROQ_MODEL, ANTHROPIC_MODEL, AUTO_PUBLISH_POLLS ("true" to skip review), SITE_URL
 
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
@@ -18,6 +19,8 @@ const SUPABASE_URL = env("SUPABASE_URL");
 const SUPABASE_SECRET_KEY = env("SUPABASE_SECRET_KEY");
 const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
 const MODEL = env("ANTHROPIC_MODEL", "claude-haiku-5-5") || "claude-haiku-5-5";
+const GROQ_API_KEY = env("GROQ_API_KEY");
+const GROQ_MODEL = env("GROQ_MODEL", "llama-3.3-70b-versatile") || "llama-3.3-70b-versatile";
 const AUTO_PUBLISH = env("AUTO_PUBLISH_POLLS") === "true";
 const SITE_URL = env("SITE_URL", "https://example.com");
 
@@ -28,11 +31,12 @@ const SIMILARITY = 0.45;
 const H = 3_600_000;
 
 let db = null;
-let claude = null;
-function connect() {
+let claude = null; // set to an AI provider when a key is present (Groq is used first because it's free)
+export function connect() {
   if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) throw new Error("Missing SUPABASE_URL or SUPABASE_SECRET_KEY secret.");
   db = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-  if (ANTHROPIC_API_KEY) claude = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  if (GROQ_API_KEY) claude = { provider: "groq" };
+  else if (ANTHROPIC_API_KEY) claude = { provider: "anthropic", client: new Anthropic({ apiKey: ANTHROPIC_API_KEY }) };
 }
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -45,11 +49,34 @@ export function extractJson(text) {
   if (start === -1 || end === -1) throw new Error("Claude's reply had no JSON");
   return JSON.parse(body.slice(start, end + 1));
 }
-async function askJson(system, prompt, maxTokens = 3000) {
-  const msg = await claude.messages.create({
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function askGroq(system, prompt, maxTokens) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        max_tokens: maxTokens,
+        temperature: 0.3,
+        messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.status === 429 && attempt < 3) { await sleep(20_000 * attempt); continue; } // free-tier rate limit: wait and retry
+    if (!res.ok) throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+  throw new Error("Groq rate limit: try again later");
+}
+export async function askJson(system, prompt, maxTokens = 3000) {
+  const fullSystem = system + "\n\nReply with JSON only, no other text.";
+  if (claude.provider === "groq") return extractJson(await askGroq(fullSystem, prompt, maxTokens));
+  const msg = await claude.client.messages.create({
     model: MODEL,
     max_tokens: maxTokens,
-    system: system + "\n\nReply with JSON only, no other text.",
+    system: fullSystem,
     messages: [{ role: "user", content: prompt }],
   });
   return extractJson(msg.content.map((b) => (b.type === "text" ? b.text : "")).join(""));
@@ -85,13 +112,47 @@ const KEYWORDS = [
 ];
 const guessTopic = (t) => KEYWORDS.find(([, re]) => re.test(t))?.[0] ?? "general";
 
+// Web-wide AI news: Google News searches that cover thousands of outlets.
+// They are added to News sources automatically, so you can pause any of them in Admin.
+const gnews = (q) => `https://news.google.com/rss/search?q=${encodeURIComponent(q + " when:1d")}&hl=en-US&gl=US&ceid=US:en`;
+export const WEB_SEARCHES = [
+  ["Web: artificial intelligence", gnews('"artificial intelligence" OR "generative AI"')],
+  ["Web: AI companies", gnews("OpenAI OR Anthropic OR \"Google DeepMind\" OR \"Meta AI\" OR xAI OR Mistral")],
+  ["Web: AI models & chatbots", gnews("ChatGPT OR Claude OR Gemini OR Llama OR Copilot OR \"AI model\"")],
+  ["Web: AI agents", gnews('"AI agent" OR "AI agents" OR "agentic AI"')],
+  ["Web: AI chips & datacenters", gnews('Nvidia AI OR "AI chips" OR "AI data center"')],
+  ["Web: AI policy", gnews('"AI regulation" OR "AI safety" OR "AI law" OR "AI act"')],
+  ["Web: AI business & stocks", gnews('"AI stocks" OR "AI startup" OR "AI funding" OR "AI spending"')],
+  ["Web: AI & jobs", gnews('"AI jobs" OR "AI layoffs" OR "AI workers" OR "AI automation"')],
+];
+async function ensureWebSearches() {
+  const { error } = await db.from("news_sources")
+    .upsert(WEB_SEARCHES.map(([name, feed_url]) => ({ name, feed_url })), { onConflict: "feed_url", ignoreDuplicates: true });
+  if (error) log("  could not add web searches:", error.message);
+}
+
+// Used when no AI key is set: keep only articles that are clearly about AI.
+const AI_WORDS = /\b(AI|A\.I\.|AGI|LLMs?|GPTs?|ChatGPT|OpenAI|Anthropic|Claude|Gemini|DeepMind|Copilot|Llama|Mistral|Grok|xAI|chatbots?|machine learning|deep learning|neural network|generative|artificial intelligence|AI agents?|agentic|foundation models?|large language models?)\b/;
+export const looksLikeAiNews = (text) => AI_WORDS.test(text || "");
+
+// Google News titles end with " - Publisher"; use the real publisher as the source name.
+export function publisherOf(item, feedName, feedUrl) {
+  if (!/news\.google\.com/.test(feedUrl)) return { source: feedName, title: item.title };
+  const pub = (typeof item.gsource === "string" ? item.gsource : item.gsource?._) || "";
+  let title = item.title || "";
+  const suffix = pub ? " - " + pub : title.match(/ - [^-]{2,60}$/)?.[0] || "";
+  if (suffix && title.endsWith(suffix)) title = title.slice(0, -suffix.length);
+  return { source: (pub || suffix.slice(3) || "Google News").trim(), title: title.trim() };
+}
+
 async function fetchFeeds() {
+  await ensureWebSearches();
   const { data: sources, error } = await db.from("news_sources").select("id, name, feed_url").eq("active", true);
   if (error) throw error;
   const parser = new Parser({
     timeout: 15_000,
     headers: { "User-Agent": `AI Pulse news reader (+${SITE_URL})` },
-    customFields: { item: [["media:content", "media"], ["media:thumbnail", "thumb"]] },
+    customFields: { item: [["media:content", "media"], ["media:thumbnail", "thumb"], ["source", "gsource"]] },
   });
   const cutoff = Date.now() - MAX_AGE_HOURS * H;
   const items = [];
@@ -103,7 +164,10 @@ async function fetchFeeds() {
         if (!it.link || !it.title || !/^https?:\/\//.test(it.link)) continue;
         const date = it.isoDate ? new Date(it.isoDate) : null;
         if (date && date.getTime() < cutoff) continue;
-        items.push({ source: s.name, url: it.link.trim(), title: clean(it.title, 300), snippet: clean(it.contentSnippet, 400),
+        const named = publisherOf(it, s.name, s.feed_url);
+        const snippet = /news\.google\.com/.test(s.feed_url) ? "" : clean(it.contentSnippet, 400);
+        if (!claude && !looksLikeAiNews(named.title + " " + snippet)) continue;
+        items.push({ source: named.source, url: it.link.trim(), title: clean(named.title, 300), snippet,
           publishedAt: date && !isNaN(date) ? date.toISOString() : null, image: pickImage(it) });
         n++;
       }
@@ -151,7 +215,7 @@ async function summarize(groups) {
   if (!claude) return out;
   const chunks = [];
   groups.forEach((g, i) => { if (i % 10 === 0) chunks.push([]); chunks.at(-1).push([i, g]); });
-  await Promise.all(chunks.map(async (chunk) => {
+  for (const chunk of chunks) {
     const listing = chunk.map(([i, g]) => `[${i}]\n` + g.items.slice(0, 3).map((it) => `- ${it.source}: ${it.title}${it.snippet ? " — " + it.snippet : ""}`).join("\n")).join("\n\n");
     try {
       const res = await askJson(
@@ -169,7 +233,7 @@ async function summarize(groups) {
     } catch (e) {
       log("  summary batch failed:", e.message);
     }
-  }));
+  }
   return out;
 }
 
@@ -225,7 +289,7 @@ async function topStories(hours, limit) {
 async function jobPolls() {
   const { data: closed } = await db.from("polls").update({ status: "closed" }).eq("status", "live").lt("closes_at", new Date().toISOString()).select("id");
   log(`Polls: closed ${closed?.length || 0} finished polls`);
-  if (!claude) return log("Polls: ANTHROPIC_API_KEY not set, skipping");
+  if (!claude) return log("Polls: no AI key set (GROQ_API_KEY), skipping");
   const { count: pending } = await db.from("polls").select("id", { count: "exact", head: true }).eq("status", "pending");
   if ((pending || 0) >= 6) return log("Polls: review queue already has 6 polls; approve or reject them first");
   const stories = await topStories(36, 15);
@@ -262,7 +326,7 @@ async function jobPolls() {
 
 // ----------------------------------------------------------------------------- discussion of the day
 async function jobDiscussion() {
-  if (!claude) return log("Discussion: ANTHROPIC_API_KEY not set, skipping");
+  if (!claude) return log("Discussion: no AI key set (GROQ_API_KEY), skipping");
   const today = new Date(); today.setUTCHours(0, 0, 0, 0);
   const { count } = await db.from("posts").select("id", { count: "exact", head: true }).eq("is_editorial", true).gte("created_at", today.toISOString());
   if (count) return log("Discussion: today's discussion already posted");
@@ -289,7 +353,7 @@ async function jobDiscussion() {
 
 // ----------------------------------------------------------------------------- moderation
 async function jobModerate() {
-  if (!claude) return log("Moderation: ANTHROPIC_API_KEY not set, skipping (the built-in spam check still runs)");
+  if (!claude) return log("Moderation: no AI key set (GROQ_API_KEY), skipping (the built-in spam check still runs)");
   for (const table of ["posts", "comments"]) {
     const cols = table === "posts" ? "id, title, body" : "id, body";
     const { data } = await db.from(table).select(cols).eq("ai_checked", false).eq("status", "visible").order("created_at").limit(40);
@@ -325,7 +389,8 @@ async function main() {
   const unknown = names.filter((n) => !JOBS[n]);
   if (unknown.length) throw new Error("Unknown job: " + unknown.join(", ") + ". Use news, moderate, polls, discussion or all.");
   connect();
-  if (!claude) log("Note: ANTHROPIC_API_KEY is not set. News will be saved without AI summaries, and polls/discussions are skipped.");
+  if (!claude) log("Note: no AI key is set (add GROQ_API_KEY). News will be saved without AI summaries, and polls/discussions are skipped.");
+  else log("AI provider: " + (claude.provider === "groq" ? "Groq (" + GROQ_MODEL + ")" : "Claude (" + MODEL + ")"));
   let failed = false;
   for (const n of names) {
     try { await JOBS[n](); } catch (e) { failed = true; log(`${n} FAILED:`, e.message); }
