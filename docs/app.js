@@ -95,7 +95,7 @@ const ICON = {
   ext: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
 };
 const icon = (n, s = 18) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
-const LOGO = `<svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect width="32" height="32" rx="10" fill="var(--accent)"/><path d="M9 17h3l2.5-6 3.5 11 2.5-5H23" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const LOGO = `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="10" fill="#0F1222"/><path d="M6 19h5l3-8 5 14 3-7h6" fill="none" stroke="#19D3C5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 let toastTimer;
 function toast(msg) {
@@ -219,6 +219,21 @@ function storyImage(id, topic, image) {
   if (image) return `<a class="story-img has-img" href="#/news/${id}" tabindex="-1" aria-hidden="true"><img src="${esc(image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.classList.remove('has-img');this.remove()"></a>`;
   return `<a class="story-img" href="#/news/${id}" tabindex="-1" aria-hidden="true" style="background:${bg};color:${fg}">${esc(topicLabel(topic))}</a>`;
 }
+function hypeBar(s, mini = false) {
+  const r = s.real_votes || 0, h = s.hype_votes || 0, t = r + h;
+  if (!t) return mini ? "" : `<p class="meta">No hype ratings yet. Is this real substance or mostly hype?</p>`;
+  const rp = Math.round((r / t) * 100);
+  if (mini) return `<span class="hype-mini" title="${rp}% of ${t} readers say real substance"><span class="hype-bar" aria-hidden="true"><span class="real" style="width:${rp}%"></span><span class="fluff" style="width:${100 - rp}%"></span></span><span>${rp}% real</span></span>`;
+  return `<div class="hype"><div class="hype-legend"><span>Hype meter</span><span class="meta" style="font-weight:500">${plural(t, "reader rating")}</span></div>
+    <div class="hype-bar" role="img" aria-label="${rp}% real substance, ${100 - rp}% hype"><span class="real" style="width:${rp}%"></span><span class="fluff" style="width:${100 - rp}%"></span></div>
+    <div class="hype-legend"><span class="r">${rp}% real substance</span><span class="h">${100 - rp}% hype</span></div></div>`;
+}
+function rateButtons(storyId, mine) {
+  if (!S.userId) return `<a class="pill" style="align-self:flex-start" href="#/login">Log in to rate: real or hype?</a>`;
+  return `<div class="row"><span class="meta" style="font-weight:600">Your call:</span>
+    <button type="button" class="pill rate-btn real-on" aria-pressed="${mine === "real"}" data-act="rate" data-id="${storyId}" data-val="real" data-cur="${mine || ""}">Real substance</button>
+    <button type="button" class="pill rate-btn hype-on" aria-pressed="${mine === "hype"}" data-act="rate" data-id="${storyId}" data-val="hype" data-cur="${mine || ""}">Mostly hype</button></div>`;
+}
 function storyCard(s) {
   const sources = Number(s.source_count ?? s.subtype ?? 1);
   return `<article class="card pad story">${storyImage(s.id, s.topic, s.image_url)}
@@ -226,7 +241,7 @@ function storyCard(s) {
       <div class="row meta"><span class="chip c-news">AI News</span><span>${esc(topicLabel(s.topic))} · ${plural(sources, "source")} · ${ago(s.published_at || s.created_at)}</span></div>
       <h2 class="t-feed" style="font-size:19px"><a class="title-link" href="#/news/${s.id}">${esc(s.title)}</a></h2>
       ${(s.summary || s.excerpt) ? `<p class="body">${esc(s.summary || s.excerpt)}</p>` : ""}
-      <a class="link" href="#/news/${s.id}">Discuss · ${plural(s.comment_count, "comment")}</a>
+      <div class="row" style="justify-content:space-between"><a class="link" href="#/news/${s.id}">Discuss · ${plural(s.comment_count, "comment")}</a>${s.real_votes != null ? hypeBar(s, true) : ""}</div>
     </div></article>`;
 }
 function postActions(id, isQ, score, myVote) {
@@ -362,12 +377,76 @@ const notFound = () => `<div class="card pad stack"><h1 class="h-page">Page not 
 const needLogin = (next) => { sessionStorage.setItem("aipulse-next", next); return `<div class="card pad stack"><h1 class="h-page">Log in to continue</h1><p class="lead">You need an account to do that. It's free.</p><a class="btn btn-p" style="align-self:flex-start" href="#/login">Log in or join</a></div>`; };
 
 /* ---------------------------------------------------------------- pages */
+let pulsePeak = "";
+function pulseChart(stories) {
+  const now = Date.now(), hourMs = 3600e3;
+  const start = now - 23 * hourMs - (now % hourMs);
+  const counts = Array(24).fill(0);
+  for (const s of stories) {
+    const i = Math.floor((new Date(s.published_at || s.created_at).getTime() - start) / hourMs);
+    if (i >= 0 && i < 24) counts[i]++;
+  }
+  const max = Math.max(4, ...counts);
+  const top = Math.ceil(max / 4) * 4;
+  const W = 640, Hh = 170, L = 34, R = 10, T = 12, B = 26, pw = W - L - R, ph = Hh - T - B;
+  const x = (i) => L + (i * pw) / 23, y = (v) => T + ph - (v / top) * ph;
+  const pts = counts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const peak = counts.indexOf(Math.max(...counts));
+  const hourLabel = (i) => new Date(start + i * hourMs).toLocaleTimeString("en-US", { hour: "numeric" });
+  pulsePeak = counts[peak] ? `Busiest hour: ${hourLabel(peak)}, ${counts[peak]} new stories` : "";
+  const tick = (v) => `<line x1="${L}" y1="${y(v)}" x2="${W - R}" y2="${y(v)}" stroke="${v ? "#262B3D" : "#3A4058"}"/><text x="${L - 8}" y="${y(v) + 4}" fill="#9AA3B8" font-size="11" text-anchor="end" font-family="JetBrains Mono, monospace">${v}</text>`;
+  const xl = [0, 6, 12, 18, 23].map((i) => `<text x="${x(i)}" y="${Hh - 6}" fill="#9AA3B8" font-size="11" text-anchor="${i === 0 ? "start" : i === 23 ? "end" : "middle"}" font-family="JetBrains Mono, monospace">${hourLabel(i)}</text>`).join("");
+  return `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="AI stories per hour over the last 24 hours, peaking at ${counts[peak]} around ${hourLabel(peak)}">
+    ${tick(0)}${tick(top / 2)}${tick(top)}
+    <path d="M${pts.join(" L")} L${x(23).toFixed(1)},${y(0)} L${x(0)},${y(0)} Z" fill="#19D3C5" fill-opacity="0.16"/>
+    <path d="M${pts.join(" L")}" fill="none" stroke="#19D3C5" stroke-width="2.5" stroke-linejoin="round"/>
+    ${counts[peak] ? `<circle cx="${x(peak)}" cy="${y(counts[peak])}" r="5" fill="#FFB547"/>` : ""}
+    ${xl}</svg>`;
+}
+async function pulseSection() {
+  const since = new Date(Date.now() - 24 * 3600e3).toISOString();
+  const { data } = await sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at")
+    .eq("is_hidden", false).gte("created_at", since).order("source_count", { ascending: false }).limit(1000);
+  const stories = data || [];
+  if (!stories.length) return "";
+  const articles = stories.reduce((a, s) => a + (s.source_count || 1), 0);
+  const topics = new Set(stories.map((s) => s.topic)).size;
+  const lead = stories[0];
+  const brief = stories.slice(0, 3);
+  let mine = null;
+  if (S.userId) {
+    const { data: r } = await sb.from("story_ratings").select("value").eq("story_id", lead.id).eq("user_id", S.userId).maybeSingle();
+    mine = r ? r.value : null;
+  }
+  return `<section class="pulse-row" aria-label="Today in AI">
+      <div class="pulse">
+        <div class="row between" style="align-items:baseline"><h1>Today's AI pulse</h1><span class="mono" style="font-size:12px;color:var(--dark-muted)">LAST 24 HOURS</span></div>
+        <div class="stats"><span><b>${fmt(stories.length)}</b> <span>STORIES</span></span><span><b>${fmt(articles)}</b> <span>ARTICLES</span></span><span><b>${topics}</b> <span>TOPICS</span></span></div>
+        <figure>${pulseChart(stories)}<figcaption>New AI stories per hour, from every source we track${pulsePeak ? ` · <span style="color:#FFB547">● ${pulsePeak}</span>` : ""}</figcaption></figure>
+      </div>
+      <aside class="card pad stack briefing" aria-label="60-second briefing">
+        <h2 style="font-size:22px;font-weight:800">The 60-second briefing</h2>
+        <p class="meta">The ${brief.length} most-covered AI stories right now</p>
+        <ol>${brief.map((s) => `<li><b>${esc(topicLabel(s.topic))}:</b> <a href="#/news/${s.id}">${esc(s.title)}</a></li>`).join("")}</ol>
+        <a class="link" style="margin-top:auto" href="#/news">All AI news →</a>
+      </aside>
+    </section>
+    <article class="card pad lead">
+      <span class="eyebrow-mono">Top story · ${esc(topicLabel(lead.topic))} · ${plural(lead.source_count, "source")} · ${ago(lead.published_at || lead.created_at)}</span>
+      <h2><a href="#/news/${lead.id}" class="title-link">${esc(lead.title)}</a></h2>
+      ${lead.summary ? `<p class="body" style="font-size:18px;max-width:72ch">${esc(lead.summary)}</p>` : ""}
+      ${hypeBar(lead)}
+      ${rateButtons(lead.id, mine)}
+      <div class="row"><a class="btn btn-p" href="#/news/${lead.id}">Read and discuss · ${lead.comment_count}</a></div>
+    </article>`;
+}
 async function pageHome() {
   const sort = ui.sort.home || "foryou";
   const p = me();
   const ask = (t) => (p ? `#/ask/${t}` : "#/login");
   const opts = sort === "hot" ? { sort: "hot", excludeNews: true } : { sort: sort === "foryou" ? "hot" : sort };
-  return `<section class="card pad stack" aria-label="Ask or share">
+  const pulse = (ui.page.home || 1) === 1 ? await pulseSection().catch(() => "") : "";
+  return `${pulse}<section class="card pad stack" aria-label="Ask or share">
       <div class="row" style="gap:12px;flex-wrap:nowrap">${avatar(p, 40)}<a href="${ask("question")}" class="composer-input">What do you want to ask or share about AI?</a></div>
       <div class="row"><a class="btn btn-soft" href="${ask("question")}">Ask a question</a><a class="btn btn-soft" href="${ask("discussion")}">Start a discussion</a><a class="btn btn-soft" href="${ask("poll")}">Create a poll</a></div>
     </section>
@@ -392,10 +471,11 @@ async function pageStory(id) {
   if (!isUuid(id)) return notFound();
   const { data: s } = await sb.from("news_stories").select("*").eq("id", id).maybeSingle();
   if (!s) return notFound();
-  const [{ data: links }, { data: polls }, { data: talks }] = await Promise.all([
+  const [{ data: links }, { data: polls }, { data: talks }, myRating] = await Promise.all([
     sb.from("news_links").select("*").eq("story_id", id).order("published_at"),
     sb.from("polls").select("id, question, total_votes").contains("story_ids", [id]).in("status", ["live", "closed"]),
     sb.from("posts").select("id, title, comment_count").eq("story_id", id).eq("status", "visible"),
+    S.userId ? sb.from("story_ratings").select("value").eq("story_id", id).eq("user_id", S.userId).maybeSingle() : { data: null },
   ]);
   document.title = s.title + " · " + SITE;
   return `<article class="card pad stack" style="gap:16px">
@@ -403,6 +483,8 @@ async function pageStory(id) {
       <h1 class="t-page">${esc(s.title)}</h1>
       ${s.image_url ? `<img src="${esc(s.image_url)}" alt="" referrerpolicy="no-referrer" style="max-height:360px;width:100%;object-fit:cover;border-radius:12px" onerror="this.remove()">` : ""}
       ${s.summary ? `<div class="summary-box"><p class="eyebrow">AI summary</p><p style="font-size:17px;color:var(--ink-2);margin-top:4px">${esc(s.summary)}</p></div>` : ""}
+      ${hypeBar(s)}
+      ${rateButtons(s.id, myRating.data ? myRating.data.value : null)}
       <div><h2 style="font-size:14px;font-weight:700;margin-bottom:4px">Read the full story · ${plural((links || []).length, "source")}</h2>
         ${(links || []).map((l) => `<a class="list-row" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow"><span class="stack" style="gap:0"><b style="font-size:14px">${esc(l.source_name)}</b><span style="color:var(--ink-2)">${esc(l.title)}</span></span><span class="meta">${icon("ext")}</span></a>`).join("")}</div>
     </article>
@@ -769,6 +851,15 @@ document.addEventListener("click", async (e) => {
       return run(next === 0
         ? sb.from(table).delete().eq(key, id).eq("user_id", S.userId)
         : sb.from(table).upsert({ [key]: id, user_id: S.userId, value: next }, { onConflict: `${key},user_id` }));
+    }
+    case "rate": {
+      if (!S.userId) return (location.hash = "#/login");
+      el.disabled = true;
+      const cur = el.dataset.cur;
+      return run(cur === val
+        ? sb.from("story_ratings").delete().eq("story_id", id).eq("user_id", S.userId)
+        : sb.from("story_ratings").upsert({ story_id: id, user_id: S.userId, value: val }, { onConflict: "story_id,user_id" }),
+        cur === val ? "Rating removed." : val === "real" ? "Rated as real substance." : "Rated as mostly hype.");
     }
     case "pollvote":
       el.disabled = true;
