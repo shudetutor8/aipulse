@@ -421,3 +421,16 @@ body.noscroll { overflow: hidden; }
 .embed:fullscreen { border-radius: 0; border: 0; }
 .embed:fullscreen .embed-frame { height: auto; flex: 1; }
 @media (max-width: 760px) { .embed-frame { height: 70vh; min-height: 420px; } }
+
+/* ---------- Yes/No forecast buttons */
+.fc-row { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.fc-q { font-weight: 700; font-size: 14px; margin-bottom: 6px; width: 100%; }
+.fc-row input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.fc-row label { height: 40px; padding: 0 16px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-weight: 700; font-size: 14px; cursor: pointer; }
+.fc-row input:checked + label { background: var(--ink); color: #fff; border-color: var(--ink); }
+.fc-row input:checked + label.fc-yes { background: var(--accent); border-color: var(--accent); }
+.fc-row input:checked + label.fc-no { background: #b4232c; border-color: #b4232c; }
+.fc-row input:focus-visible + label { outline: 3px solid var(--accent); outline-offset: 2px; }
+.fc-yes, .fc-no { min-width: 80px; justify-content: center; }
+.crowd-bar { height: 8px; border-radius: 8px; background: #f3c9cc; overflow: hidden; }
+.crowd-bar span { display: block; height: 100%; background: var(--accent); }
