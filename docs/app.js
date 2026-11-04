@@ -702,6 +702,20 @@ async function pageNews() {
     ${rows.length ? rows.slice(0, PAGE).map(storyCard).join("") : `<div class="card pad meta">No stories yet. News is collected automatically every 30 minutes.</div>`}
     ${pager("news", rows.length > PAGE)}`;
 }
+/* Original article shown inside our page (only for publishers that allow it), like a built-in browser window. */
+function embedBlock(s, links) {
+  const framed = [...new Map(links.filter((l) => l.frameable && /^https:\/\//.test(l.real_url || "")).map((l) => [l.source_name, l])).values()].slice(0, 6);
+  if (!framed.length) return "";
+  const first = framed[0];
+  return `<section class="embed" id="embed" aria-label="Original article">
+    <div class="embed-bar">
+      <div class="row" style="gap:6px;min-width:0">${framed.length > 1 ? framed.map((l, i) => `<button type="button" class="pill embed-src ${i === 0 ? "on" : ""}" aria-pressed="${i === 0}" data-act="embed-src" data-url="${esc(l.real_url)}" data-src="${esc(l.source_name)}">${esc(l.source_name)}</button>`).join("") : `<span class="embed-name">${esc(first.source_name)}</span>`}</div>
+      <button type="button" class="btn btn-p btn-s" data-act="embed-full" data-url="${esc(first.real_url)}" data-src="${esc(first.source_name)}" data-title="${esc(s.title)}">⤢ Full screen</button>
+    </div>
+    <iframe class="embed-frame" id="embed-frame" src="${esc(first.real_url)}" title="Original article from ${esc(first.source_name)}" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
+    <p class="embed-note">Original article from <b id="embed-who">${esc(first.source_name)}</b>, shown inside ${esc(SITE)}. ${s.article_at || s.summary ? "Our own summary is below." : ""}</p>
+  </section>`;
+}
 async function pageStory(id) {
   if (!isUuid(id)) return notFound();
   const { data: s } = await sb.from("news_stories").select("*").eq("id", id).maybeSingle();
@@ -716,7 +730,8 @@ async function pageStory(id) {
   return `<article class="card pad stack" style="gap:16px">
       <div class="row meta"><span class="chip c-news">AI News</span><span>${topicLink(s.topic)} · ${ago(s.published_at || s.created_at)}</span>${s.is_hidden ? `<span class="chip c-warn">Hidden</span>` : ""}</div>
       <h1 class="t-page">${esc(s.title)}</h1>
-      ${s.image_url ? `<img src="${esc(s.image_url)}" alt="" referrerpolicy="no-referrer" style="max-height:360px;width:100%;object-fit:cover;border-radius:12px" onerror="this.remove()">` : ""}
+      ${embedBlock(s, links || [])}
+      ${s.image_url && !(links || []).some((l) => l.frameable && l.real_url) ? `<img src="${esc(s.image_url)}" alt="" referrerpolicy="no-referrer" style="max-height:360px;width:100%;object-fit:cover;border-radius:12px" onerror="this.remove()">` : ""}
       ${s.article && (s.article.paragraphs || []).length ? `<section class="story-body">
         <p class="eyebrow-mono">${Math.max(1, Math.round((s.article.words || 400) / 230))} min read · Written by ${esc(SITE)}</p>
         ${s.article.paragraphs.map((x) => `<p class="story-text">${esc(x)}</p>`).join("")}
@@ -734,7 +749,6 @@ async function pageStory(id) {
       ${hypeBar(s)}
       ${rateButtons(s.id, myRating.data ? myRating.data.value : null)}
       ${shareBar("#/news/" + s.id, s.title)}
-      ${(links || []).some((l) => l.frameable && l.real_url) ? `<div class="readers"><h2 class="eyebrow-mono">Read the original here</h2><div class="row">${[...new Map(links.filter((l) => l.frameable && l.real_url).map((l) => [l.source_name, l])).values()].slice(0, 6).map((l) => `<button type="button" class="btn btn-o btn-s" data-act="reader" data-url="${esc(l.real_url)}" data-src="${esc(l.source_name)}" data-title="${esc(l.title || s.title)}">${icon("news", 16)} ${esc(l.source_name)}</button>`).join("")}</div></div>` : ""}
       ${(links || []).length ? `<p class="credits"><span>Reported by</span> ${[...new Map(links.map((l) => [l.source_name, l])).values()].map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${esc(l.title)}">${esc(l.source_name)}</a>`).join(" · ")}</p>` : ""}
     </article>
     ${(talks || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">Discussion of the day</h2>${talks.map((p) => `<a class="list-row" href="#/p/${p.id}"><b>${esc(p.title)}</b><span class="meta">${plural(p.comment_count, "reply", "replies")}</span></a>`).join("")}</section>` : ""}
@@ -1294,7 +1308,8 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "logout": await sb.auth.signOut(); return;
-    case "reader": {
+    case "reader": { openReaderFrom(el); return; }
+    case "reader-unused": {
       const r = document.getElementById("reader"); if (!r) return;
       document.getElementById("rd-src").textContent = el.dataset.src || "";
       document.getElementById("rd-title").textContent = el.dataset.title || "";
@@ -1303,6 +1318,20 @@ document.addEventListener("click", async (e) => {
       document.getElementById("rd-close").focus(); return;
     }
     case "reader-close": closeReader(); return;
+    case "embed-src": {
+      const fr = document.getElementById("embed-frame"); if (!fr) return;
+      fr.src = el.dataset.url; document.getElementById("embed-who").textContent = el.dataset.src;
+      document.querySelectorAll(".embed-src").forEach((b) => { b.classList.toggle("on", b === el); b.setAttribute("aria-pressed", String(b === el)); });
+      const full = document.querySelector('[data-act="embed-full"]'); if (full) { full.dataset.url = el.dataset.url; full.dataset.src = el.dataset.src; }
+      return;
+    }
+    case "embed-full": {
+      const box = document.getElementById("embed");
+      if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+      if (box && box.requestFullscreen) { box.requestFullscreen().catch(() => openReaderFrom(el)); return; }
+      if (box && box.webkitRequestFullscreen) { box.webkitRequestFullscreen(); return; }
+      openReaderFrom(el); return;
+    }
     case "reader-full": {
       const r = document.getElementById("reader");
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -1560,6 +1589,14 @@ document.addEventListener("input", (e) => {
 });
 
 const READER = { back: null };
+function openReaderFrom(el) {
+  const r = document.getElementById("reader"); if (!r) return;
+  document.getElementById("rd-src").textContent = el.dataset.src || "";
+  document.getElementById("rd-title").textContent = el.dataset.title || "";
+  document.getElementById("rd-frame").src = el.dataset.url;
+  r.hidden = false; document.body.classList.add("noscroll"); READER.back = el;
+  document.getElementById("rd-close").focus();
+}
 function closeReader() {
   const r = document.getElementById("reader"); if (!r || r.hidden) return;
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -1570,6 +1607,7 @@ function closeReader() {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeReader(); });
 document.addEventListener("fullscreenchange", () => {
   const b = document.querySelector('[data-act="reader-full"]'); if (b) b.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+  const e = document.querySelector('[data-act="embed-full"]'); if (e) e.textContent = document.fullscreenElement ? "✕ Exit full screen" : "⤢ Full screen";
 });
 
 /* ---------------------------------------------------------------- start */
