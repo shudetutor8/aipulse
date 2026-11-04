@@ -2,7 +2,7 @@
 # Needs three repository secrets (Settings → Secrets and variables → Actions → New repository secret):
 #   SUPABASE_URL          your Supabase project URL
 #   SUPABASE_SECRET_KEY   the SECRET key from Supabase → Project Settings → API Keys
-#   ANTHROPIC_API_KEY     your Claude API key
+#   GROQ_API_KEY          free AI key from console.groq.com (or ANTHROPIC_API_KEY for paid Claude)
 # Optional repository variables (same page, "Variables" tab): AUTO_PUBLISH_POLLS = true, SITE_URL
 name: Automatic jobs
 
@@ -56,6 +56,8 @@ jobs:
           JOBS: ${{ steps.pick.outputs.jobs }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
           AUTO_PUBLISH_POLLS: ${{ vars.AUTO_PUBLISH_POLLS }}
