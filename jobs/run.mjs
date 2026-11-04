@@ -7,10 +7,16 @@
 //
 // Needs these environment variables (GitHub → Settings → Secrets and variables → Actions):
 //   SUPABASE_URL, SUPABASE_SECRET_KEY
-//   and ONE AI key: GROQ_API_KEY (free, console.groq.com) or ANTHROPIC_API_KEY (paid)
+//   and optionally an AI key: GROQ_API_KEY (free, console.groq.com) or ANTHROPIC_API_KEY (paid).
+// Without a key, or when Groq is over its limit or down, the jobs use a free open-source
+// model (Qwen3-4B) that the workflow downloads and runs on GitHub's own computers (LOCAL_AI_DIR).
 // Optional: GROQ_MODEL, ANTHROPIC_MODEL, AUTO_PUBLISH_POLLS ("true" to skip review), SITE_URL
 
 import Anthropic from "@anthropic-ai/sdk";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import Parser from "rss-parser";
 
@@ -31,13 +37,22 @@ const SIMILARITY = 0.45;
 const H = 3_600_000;
 
 let db = null;
-let claude = null; // set to an AI provider when a key is present (Groq is used first because it's free)
+// The AI used by the jobs. primary = "groq" | "anthropic" | "local"; local = built-in model available as a fallback.
+let claude = null;
+const LOCAL_AI_DIR = env("LOCAL_AI_DIR");
+function localAiAvailable() {
+  return Boolean(LOCAL_AI_DIR) && fs.existsSync(path.join(LOCAL_AI_DIR, "model.gguf")) && fs.existsSync(path.join(LOCAL_AI_DIR, "server-path.txt"));
+}
 export function connect() {
   if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) throw new Error("Missing SUPABASE_URL or SUPABASE_SECRET_KEY secret.");
   db = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-  if (GROQ_API_KEY) claude = { provider: "groq" };
-  else if (ANTHROPIC_API_KEY) claude = { provider: "anthropic", client: new Anthropic({ apiKey: ANTHROPIC_API_KEY }) };
+  const local = localAiAvailable();
+  if (GROQ_API_KEY) claude = { primary: "groq", local, groqDown: false };
+  else if (ANTHROPIC_API_KEY) claude = { primary: "anthropic", client: new Anthropic({ apiKey: ANTHROPIC_API_KEY }), local };
+  else if (local) claude = { primary: "local", local };
 }
+// The built-in model is slow, so it gets smaller batches.
+const usingLocalOnly = () => claude && claude.primary === "local";
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 // ----------------------------------------------------------------------------- Claude
@@ -50,6 +65,44 @@ export function extractJson(text) {
   return JSON.parse(body.slice(start, end + 1));
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- built-in model (llama.cpp server on this computer), started only when needed
+const LOCAL_PORT = 8089;
+let localServer = null;
+async function startLocal() {
+  if (localServer) return localServer.ready;
+  const bin = fs.readFileSync(path.join(LOCAL_AI_DIR, "server-path.txt"), "utf8").trim();
+  log("  starting the built-in AI model (first use this run)…");
+  const child = spawn(bin, [
+    "-m", path.join(LOCAL_AI_DIR, "model.gguf"), "--host", "127.0.0.1", "--port", String(LOCAL_PORT),
+    "-c", "8192", "-t", String(Math.max(1, os.cpus().length)), "--no-webui",
+  ], { stdio: "ignore", env: { ...process.env, LD_LIBRARY_PATH: [path.dirname(bin), process.env.LD_LIBRARY_PATH].filter(Boolean).join(":") } });
+  const ready = (async () => {
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error("built-in AI model failed to start");
+      try { if ((await fetch(`http://127.0.0.1:${LOCAL_PORT}/health`)).ok) return; } catch {}
+      await sleep(1000);
+    }
+    throw new Error("built-in AI model took too long to start");
+  })();
+  localServer = { child, ready };
+  try { await ready; log("  built-in AI model ready"); }
+  catch (e) { child.kill(); localServer = null; claude.local = false; throw e; }
+}
+export function stopLocal() { if (localServer) { localServer.child.kill(); localServer = null; } }
+async function askLocal(system, prompt, maxTokens) {
+  await startLocal();
+  const res = await fetch(`http://127.0.0.1:${LOCAL_PORT}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ max_tokens: maxTokens, temperature: 0.3, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] }),
+    signal: AbortSignal.timeout(10 * 60_000),
+  });
+  if (!res.ok) throw new Error(`built-in AI ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "";
+}
 async function askGroq(system, prompt, maxTokens) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -72,7 +125,16 @@ async function askGroq(system, prompt, maxTokens) {
 }
 export async function askJson(system, prompt, maxTokens = 3000) {
   const fullSystem = system + "\n\nReply with JSON only, no other text.";
-  if (claude.provider === "groq") return extractJson(await askGroq(fullSystem, prompt, maxTokens));
+  if (claude.primary === "groq" && !claude.groqDown) {
+    try {
+      return extractJson(await askGroq(fullSystem, prompt, maxTokens));
+    } catch (e) {
+      if (!claude.local) throw e;
+      log(`  Groq unavailable (${String(e.message).slice(0, 120)}); switching to the built-in AI model`);
+      claude.groqDown = true;
+    }
+  }
+  if (claude.primary === "local" || claude.groqDown) return extractJson(await askLocal(fullSystem, prompt, maxTokens));
   const msg = await claude.client.messages.create({
     model: MODEL,
     max_tokens: maxTokens,
@@ -214,7 +276,8 @@ async function summarize(groups) {
   const out = new Map();
   if (!claude) return out;
   const chunks = [];
-  groups.forEach((g, i) => { if (i % 10 === 0) chunks.push([]); chunks.at(-1).push([i, g]); });
+  const size = usingLocalOnly() ? 5 : 10;
+  groups.forEach((g, i) => { if (i % size === 0) chunks.push([]); chunks.at(-1).push([i, g]); });
   for (const chunk of chunks) {
     const listing = chunk.map(([i, g]) => `[${i}]\n` + g.items.slice(0, 3).map((it) => `- ${it.source}: ${it.title}${it.snippet ? " — " + it.snippet : ""}`).join("\n")).join("\n\n");
     try {
@@ -254,7 +317,7 @@ async function jobNews() {
     await db.from("news_stories").update({ source_count: count || 1 }).eq("id", g.storyId);
   }
 
-  const newGroups = groups.filter((g) => !g.storyId && g.items.length).sort((a, b) => b.items.length - a.items.length).slice(0, MAX_NEW_STORIES);
+  const newGroups = groups.filter((g) => !g.storyId && g.items.length).sort((a, b) => b.items.length - a.items.length).slice(0, usingLocalOnly() ? 12 : MAX_NEW_STORIES);
   const ai = await summarize(newGroups);
   let created = 0, skipped = 0;
   for (const [i, g] of newGroups.entries()) {
@@ -289,7 +352,7 @@ async function topStories(hours, limit) {
 async function jobPolls() {
   const { data: closed } = await db.from("polls").update({ status: "closed" }).eq("status", "live").lt("closes_at", new Date().toISOString()).select("id");
   log(`Polls: closed ${closed?.length || 0} finished polls`);
-  if (!claude) return log("Polls: no AI key set (GROQ_API_KEY), skipping");
+  if (!claude) return log("Polls: no AI key set (GROQ_API_KEY) and no built-in model, skipping");
   const { count: pending } = await db.from("polls").select("id", { count: "exact", head: true }).eq("status", "pending");
   if ((pending || 0) >= 6) return log("Polls: review queue already has 6 polls; approve or reject them first");
   const stories = await topStories(36, 15);
@@ -326,7 +389,7 @@ async function jobPolls() {
 
 // ----------------------------------------------------------------------------- discussion of the day
 async function jobDiscussion() {
-  if (!claude) return log("Discussion: no AI key set (GROQ_API_KEY), skipping");
+  if (!claude) return log("Discussion: no AI key set (GROQ_API_KEY) and no built-in model, skipping");
   const today = new Date(); today.setUTCHours(0, 0, 0, 0);
   const { count } = await db.from("posts").select("id", { count: "exact", head: true }).eq("is_editorial", true).gte("created_at", today.toISOString());
   if (count) return log("Discussion: today's discussion already posted");
@@ -353,10 +416,10 @@ async function jobDiscussion() {
 
 // ----------------------------------------------------------------------------- moderation
 async function jobModerate() {
-  if (!claude) return log("Moderation: no AI key set (GROQ_API_KEY), skipping (the built-in spam check still runs)");
+  if (!claude) return log("Moderation: no AI key set (GROQ_API_KEY) and no built-in model, skipping (the built-in spam check still runs)");
   for (const table of ["posts", "comments"]) {
     const cols = table === "posts" ? "id, title, body" : "id, body";
-    const { data } = await db.from(table).select(cols).eq("ai_checked", false).eq("status", "visible").order("created_at").limit(40);
+    const { data } = await db.from(table).select(cols).eq("ai_checked", false).eq("status", "visible").order("created_at").limit(usingLocalOnly() ? 15 : 40);
     const rows = data || [];
     if (!rows.length) { log(`Moderation: no new ${table}`); continue; }
     let flagged = [];
@@ -389,12 +452,14 @@ async function main() {
   const unknown = names.filter((n) => !JOBS[n]);
   if (unknown.length) throw new Error("Unknown job: " + unknown.join(", ") + ". Use news, moderate, polls, discussion or all.");
   connect();
-  if (!claude) log("Note: no AI key is set (add GROQ_API_KEY). News will be saved without AI summaries, and polls/discussions are skipped.");
-  else log("AI provider: " + (claude.provider === "groq" ? "Groq (" + GROQ_MODEL + ")" : "Claude (" + MODEL + ")"));
+  if (!claude) log("Note: no AI available (no GROQ_API_KEY and no built-in model). News is saved without AI summaries; polls and discussions are skipped.");
+  else log("AI: " + (claude.primary === "groq" ? "Groq (" + GROQ_MODEL + ")" : claude.primary === "anthropic" ? "Claude (" + MODEL + ")" : "built-in model on GitHub (free)")
+    + (claude.primary !== "local" && claude.local ? ", with the built-in model as backup" : ""));
   let failed = false;
   for (const n of names) {
     try { await JOBS[n](); } catch (e) { failed = true; log(`${n} FAILED:`, e.message); }
   }
+  stopLocal();
   if (failed) process.exitCode = 1;
 }
 if (import.meta.url === `file://${process.argv[1]}`) {
