@@ -322,6 +322,9 @@ async function copyText(text) {
 }
 
 /* ---------------------------------------------------------------- predictions + models */
+// "How sure" choices: distance from 50%. Yes + Very sure = 90%, No + Very sure = 10%.
+const CONF = [["little", 10, "A little"], ["pretty", 25, "Pretty sure"], ["very", 40, "Very sure"]];
+const callText = (v) => `${v >= 50 ? "Yes" : "No"}, ${(CONF.reduce((b, c) => (Math.abs(Math.abs(v - 50) - c[1]) < Math.abs(Math.abs(v - 50) - b[1]) ? c : b))[2]).toLowerCase()} (${v >= 50 ? v : 100 - v}% sure it ${v >= 50 ? "will" : "won't"})`;
 const predOpen = (p) => p.status === "live" && new Date(p.closes_at).getTime() > Date.now();
 const longDate = (d) => new Date(String(d).length === 10 ? d + "T12:00:00Z" : d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 function trendText(p) {
@@ -339,16 +342,22 @@ function predStatusLine(p) {
 }
 function forecastBox(p, mine) {
   if (p.status === "resolved") {
-    return mine ? `<p class="fc-result ${mine.points >= 0 ? "good" : "bad"}">You said ${mine.prob}% · ${mine.points >= 0 ? "+" : ""}${mine.points} points</p>` : `<p class="meta">You didn't forecast this one.</p>`;
+    return mine ? `<p class="fc-result ${mine.points >= 0 ? "good" : "bad"}">Your call: ${callText(mine.prob)} · ${mine.points >= 0 ? "+" : ""}${mine.points} points</p>` : `<p class="meta">You didn't make a call on this one.</p>`;
   }
   if (p.status === "void") return `<p class="meta">Cancelled: no points for anyone.</p>`;
-  if (!predOpen(p)) return mine ? `<p class="meta">Your forecast: ${mine.prob}% yes. Points are added when it's settled.</p>` : `<p class="meta">Forecasting is closed.</p>`;
-  if (!S.userId) return `<a class="pill" style="align-self:flex-start" href="#/login">Log in to make your forecast</a>`;
-  const v = mine ? mine.prob : p.crowd_prob || 50;
+  if (!predOpen(p)) return mine ? `<p class="meta">Your call: ${callText(mine.prob)}. Points are added when it's settled.</p>` : `<p class="meta">Calls are closed.</p>`;
+  if (!S.userId) return `<a class="pill" style="align-self:flex-start" href="#/login">Log in to make your call</a>`;
+  const v = mine ? mine.prob : null;
+  const side = v == null ? "" : v >= 50 ? "yes" : "no";
+  const sure = v == null ? "" : CONF.reduce((best, c) => (Math.abs(Math.abs(v - 50) - c[1]) < Math.abs(Math.abs(v - 50) - best[1]) ? c : best))[0];
+  const id = p.id.slice(0, 8);
   return `<form class="fc" data-form="forecast" data-id="${p.id}" data-has="${mine ? 1 : 0}">
-    <label for="fc-${p.id}">Your forecast: <output id="fo-${p.id}">${v}% yes</output></label>
-    <input type="range" id="fc-${p.id}" name="prob" min="1" max="99" value="${v}" data-out="fo-${p.id}">
-    <div class="row between"><span class="meta">${mine ? "Saved. You can change it until it closes." : "Slide, then save."}</span><button class="btn btn-p btn-s">${mine ? "Update forecast" : "Save forecast"}</button></div>
+    <fieldset class="fc-row"><legend class="fc-q">Will it happen?</legend>
+      <input type="radio" name="side" id="y-${id}" value="yes" ${side === "yes" ? "checked" : ""} required><label for="y-${id}" class="fc-yes">Yes</label>
+      <input type="radio" name="side" id="n-${id}" value="no" ${side === "no" ? "checked" : ""}><label for="n-${id}" class="fc-no">No</label></fieldset>
+    <fieldset class="fc-row"><legend class="fc-q">How sure are you?</legend>
+      ${CONF.map(([k, d, l]) => `<input type="radio" name="sure" id="${k}-${id}" value="${k}" ${sure === k ? "checked" : ""} required><label for="${k}-${id}">${l}</label>`).join("")}</fieldset>
+    <div class="row between"><span class="meta">${mine ? `Your call: <b>${callText(v)}</b>. You can change it any time; early calls count most.` : "Early calls earn the most points."}</span><button class="btn btn-p btn-s">${mine ? "Update my call" : "Make my call"}</button></div>
   </form>`;
 }
 function predCard(p, mine, big = false) {
@@ -357,6 +366,7 @@ function predCard(p, mine, big = false) {
     <${big ? "h1" : "h2"} class="pred-q"><a class="title-link" href="#/predict/${p.id}">${esc(p.question)}</a></${big ? "h1" : "h2"}>
     ${big && p.criteria ? `<p class="body"><b>Counts as YES if:</b> ${esc(p.criteria)}</p>` : ""}
     <div class="crowd"><b>${p.crowd_prob == null ? "–" : p.crowd_prob + "%"}</b><span>${trendText(p)}</span></div>
+    ${p.crowd_prob != null ? `<div class="crowd-bar" role="img" aria-label="Crowd: ${p.crowd_prob}% yes"><span style="width:${p.crowd_prob}%"></span></div>` : ""}
     ${p.status === "resolved" || p.status === "void" ? `<p class="note ${p.status === "resolved" ? (p.outcome ? "c-news" : "c-warn") : ""}"><b>${p.status === "void" ? "Cancelled" : "Result: " + (p.outcome ? "YES" : "NO")}</b>${p.resolution_note ? " · " + linkify(p.resolution_note) : ""}</p>` : ""}
     ${forecastBox(p, mine)}
     ${big ? "" : `<a class="link" href="#/predict/${p.id}">Why? Discuss · ${plural(p.comment_count, "comment")}</a>`}
@@ -846,7 +856,7 @@ async function pagePredict(sub) {
   const head = header("Predictions", "Make your call on what happens next in AI. Free to play: earn points when you're right. No money involved.",
     `<a class="btn btn-o" href="#/predict/leaders">Best forecasters</a>`);
   const tabsHtml = `<nav class="row" aria-label="Show">${[["", "Open"], ["settled", "Settled"], ["leaders", "Best forecasters"]].map(([id, l]) => `<a class="pill ${(id || "open") === tab ? "on" : ""}" href="#/predict${id ? "/" + id : ""}">${l}</a>`).join("")}</nav>`;
-  const how = `<details class="card pad how"><summary><b>How points work</b></summary><p class="body">Slide to how likely you think YES is. When the question is settled: saying 50% earns 0 points; the more confident you were and right, the more you earn (up to +100); confident and wrong loses up to −300. So only be sure when you're sure. Your forecast stays private until the question is settled.</p></details>`;
+  const how = `<details class="card pad how"><summary><b>How points work</b></summary><p class="body">Pick <b>Yes</b> or <b>No</b> and how sure you are. When the answer is known you get points: <b>Very sure and right +96</b>, Pretty sure and right +64, A little sure and right +24, and being wrong costs more (Very sure and wrong −224). Your score is the <b>average over the whole time the question was open</b>, so calling it early counts most and switching at the last minute earns almost nothing. You can change your call whenever new news comes out. Your call stays private until the question is settled.</p></details>`;
   if (tab === "leaders") {
     const leaders = await getLeaders(50);
     return `${head}${tabsHtml}<section class="card pad">${leaders.length ? `<div class="table-box"><table><thead><tr><th>#</th><th>Forecaster</th><th>Points</th><th>Right</th><th>Settled calls</th></tr></thead><tbody>
@@ -1526,11 +1536,13 @@ document.addEventListener("submit", async (e) => {
     }
     if (kind === "forecast") {
       if (!S.userId) { location.hash = "#/login"; return; }
-      const prob = Math.min(99, Math.max(1, Number(fd.get("prob")) || 50));
+      const sideV = fd.get("side"), sureV = CONF.find((c) => c[0] === fd.get("sure"));
+      if (!sideV || !sureV) { toast("Pick Yes or No, and how sure you are."); return; }
+      const prob = sideV === "yes" ? 50 + sureV[1] : 50 - sureV[1];
       const { error } = f.dataset.has === "1"
         ? await sb.from("forecasts").update({ prob }).eq("prediction_id", f.dataset.id).eq("user_id", S.userId)
         : await sb.from("forecasts").insert({ prediction_id: f.dataset.id, user_id: S.userId, prob });
-      toast(error ? errText(error) : `Forecast saved: ${prob}% yes.`);
+      toast(error ? errText(error) : `Saved: ${callText(prob)}.`);
       return refresh();
     }
     if (kind === "model-rate") {
