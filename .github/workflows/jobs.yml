@@ -5,23 +5,28 @@
 #   GROQ_API_KEY          optional: free AI key from console.groq.com
 # Without GROQ_API_KEY (or when Groq is over its free limit), a free open-source AI model
 # (Qwen3-4B, Apache 2.0) runs right here on GitHub's computer instead.
-# Optional repository variables (same page, "Variables" tab): AUTO_PUBLISH_POLLS = true, SITE_URL
+# Fully automatic by default. Optional repository variables ("Variables" tab): AUTO_PUBLISH_POLLS = false to review
+# polls and predictions yourself before they go live; SITE_URL
 name: Automatic jobs
 
 on:
   schedule:
     - cron: "7,37 * * * *"   # news + moderation, every 30 minutes
-    - cron: "20 */6 * * *"   # new hot-topic polls, every 6 hours
+    - cron: "20 */6 * * *"   # new hot-topic polls, predictions and the Model Index, every 6 hours
     - cron: "5 12 * * *"     # Discussion of the day, 12:05 UTC (8:05 am New York in summer, 7:05 am in winter)
   workflow_dispatch:
     inputs:
       jobs:
-        description: "Jobs to run: news, moderate, polls, discussion or all"
+        description: "Jobs to run: news, moderate, polls, predictions, models, discussion or all"
         default: "all"
         required: true
 
 env:
   LLAMA_TAG: b11800   # llama.cpp release used for the built-in AI (falls back to the newest if missing)
+
+permissions:
+  contents: read
+  actions: write   # lets the keep-alive step below stop GitHub from pausing the schedule
 
 concurrency:
   group: aipulse-jobs
@@ -85,7 +90,7 @@ jobs:
         run: |
           case "$SCHEDULE" in
             "7,37 * * * *") JOBS="news moderate" ;;
-            "20 */6 * * *") JOBS="polls" ;;
+            "20 */6 * * *") JOBS="polls predictions models" ;;
             "5 12 * * *")   JOBS="discussion" ;;
             *)              JOBS="${REQUESTED:-all}" ;;
           esac
@@ -103,3 +108,12 @@ jobs:
           AUTO_PUBLISH_POLLS: ${{ vars.AUTO_PUBLISH_POLLS }}
           SITE_URL: ${{ vars.SITE_URL }}
           LOCAL_AI_DIR: /home/runner/localai
+      # GitHub pauses scheduled jobs in repositories with no activity for 60 days.
+      # Re-enabling the workflow once a day resets that timer, so the site keeps running unattended.
+      - name: Keep the schedule alive
+        if: github.event.schedule == '5 12 * * *'
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/jobs.yml/enable"
