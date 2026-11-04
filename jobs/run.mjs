@@ -26,7 +26,7 @@ const SUPABASE_SECRET_KEY = env("SUPABASE_SECRET_KEY");
 const ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY");
 const MODEL = env("ANTHROPIC_MODEL", "claude-haiku-5-5") || "claude-haiku-5-5";
 const GROQ_API_KEY = env("GROQ_API_KEY");
-const GROQ_MODEL = env("GROQ_MODEL", "llama-3.3-70b-versatile") || "llama-3.3-70b-versatile";
+const GROQ_MODEL = env("GROQ_MODEL", "openai/gpt-oss-120b") || "openai/gpt-oss-120b";
 const AUTO_PUBLISH = env("AUTO_PUBLISH_POLLS") === "true";
 const SITE_URL = env("SITE_URL", "https://example.com");
 
@@ -110,8 +110,9 @@ async function askGroq(system, prompt, maxTokens) {
       headers: { "content-type": "application/json", authorization: `Bearer ${GROQ_API_KEY}` },
       body: JSON.stringify({
         model: GROQ_MODEL,
-        max_tokens: maxTokens,
+        max_tokens: maxTokens + (/gpt-oss/.test(GROQ_MODEL) ? 1500 : 0), // room for the model's short thinking step
         temperature: 0.3,
+        ...(/gpt-oss/.test(GROQ_MODEL) ? { reasoning_effort: "low" } : {}),
         messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
       }),
       signal: AbortSignal.timeout(60_000),
