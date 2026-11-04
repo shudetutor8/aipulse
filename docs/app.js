@@ -430,7 +430,7 @@ function shell(route, content, rail, railHtml) {
           <a href="#/u/${esc(p.username)}">Your profile</a><a href="#/settings">Settings</a>${p.is_admin ? `<a href="#/admin">Admin</a>` : ""}
           <button type="button" data-act="logout">Log out</button></div></details>
         <a class="btn btn-p" href="#/ask/question">Ask</a>` : `
-        <a class="btn btn-p" href="#/login">Sign in</a>`}</div>
+        <a class="btn btn-o top-login" href="#/login">Log in</a><a class="btn btn-p" href="#/signup">Sign up</a>`}</div>
     </div></header>
     <div class="wrap"><div class="layout ${rail ? "" : head === "" ? "full" : "plain"}">
       <main class="main" id="main" tabindex="-1">${content}</main>
@@ -453,7 +453,7 @@ function header(title, text, action) {
   return `<header class="card pad row between" style="gap:12px"><div class="stack" style="gap:4px;min-width:0;flex:1 1 300px"><h1 class="h-page">${esc(title)}</h1><p class="lead">${esc(text)}</p></div>${action || ""}</header>`;
 }
 const notFound = () => `<div class="card pad stack"><h1 class="h-page">Page not found</h1><p class="lead">It may have been deleted, or the link is wrong.</p><a class="btn btn-p" style="align-self:flex-start" href="#/">Go to the homepage</a></div>`;
-const needLogin = (next) => { sessionStorage.setItem("aipulse-next", next); return `<div class="card pad stack"><h1 class="h-page">Log in to continue</h1><p class="lead">You need an account to do that. It's free.</p><a class="btn btn-p" style="align-self:flex-start" href="#/login">Log in or join</a></div>`; };
+const needLogin = (next) => { sessionStorage.setItem("aipulse-next", next); return `<div class="card pad stack"><h1 class="h-page">Log in to continue</h1><p class="lead">You need an account to do that. It's free.</p><span class="row"><a class="btn btn-p" href="#/signup">Sign up free</a><a class="btn btn-o" href="#/login">Log in</a></span></div>`; };
 
 /* ---------------------------------------------------------------- pages */
 let pulsePeak = "";
@@ -932,21 +932,52 @@ async function pageSettings() {
       <div><label class="label" for="en">Display name</label><input class="field" id="en" name="name" maxlength="50" value="${esc(p.display_name || "")}"></div>
       <div><label class="label" for="eb">Bio</label><textarea class="field" id="eb" name="bio" rows="3" maxlength="300">${esc(p.bio || "")}</textarea></div>
       <p class="${ui.ok.profile ? "ok-msg" : "err"}" role="status">${esc(ui.ok.profile || ui.err.profile || "")}</p>
-      <div><button class="btn btn-p">Save profile</button></div></form></section>`;
+      <div><button class="btn btn-p">Save profile</button></div></form></section>
+    <section class="card pad stack" style="gap:16px"><h2 class="section-h">Password</h2>
+      <p class="meta">Set or change the password you use to log in.</p>
+      <form class="stack" style="gap:12px" data-form="newpw">${pwField("set-pw", "New password", "new-password")}
+        <p class="err" role="alert">${esc(ui.err.login || "")}</p><div><button class="btn btn-p">Save password</button></div></form></section>`;
 }
-async function pageLogin() {
-  if (S.userId) { location.hash = sessionStorage.getItem("aipulse-next") || "#/"; return ""; }
-  return `<section class="card pad stack" style="gap:18px;max-width:460px;margin:0 auto;width:100%">
-    <div><h1 class="h-page">Join ${esc(SITE)}</h1><p class="lead">Ask questions, vote in polls and discuss the latest in AI.</p></div>
-    ${ui.ok.login ? `<div class="note c-news" role="status"><b>Check your email.</b><br>We sent a sign-in link to ${esc(ui.ok.login)}. Open it on this device to continue.</div>` : `
-    <button type="button" class="btn btn-o" style="height:48px" data-act="google">
-      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
-      Continue with Google</button>
-    <div class="row meta" style="flex-wrap:nowrap;font-weight:700;letter-spacing:.08em"><span style="flex:1;height:1px;background:var(--line)"></span>OR<span style="flex:1;height:1px;background:var(--line)"></span></div>
-    <form class="stack" data-form="login"><div><label class="label" for="email">Email</label><input class="field" id="email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
-      <p class="err" role="alert">${esc(ui.err.login || "")}</p>
-      <button class="btn btn-p" style="height:48px" ${ui.busy ? "disabled" : ""}>${ui.busy ? "Sending…" : "Email me a sign-in link"}</button></form>`}
+const GOOGLE_ICON = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>`;
+function authShell(title, sub, inner) {
+  return `<section class="card pad stack auth" style="gap:18px;max-width:460px;margin:0 auto;width:100%">
+    <div><h1 class="h-page">${title}</h1>${sub ? `<p class="lead">${sub}</p>` : ""}</div>${inner}
     <p class="meta">By continuing you agree to the <a class="link" href="#/terms">Terms</a> and <a class="link" href="#/privacy">Privacy Policy</a>.</p></section>`;
+}
+const pwField = (id, label, auto) => `<div><label class="label" for="${id}">${label}</label>
+  <div class="pw"><input class="field" id="${id}" name="password" type="password" autocomplete="${auto}" required minlength="8" maxlength="72" placeholder="At least 8 characters">
+  <button type="button" class="pw-eye" data-act="pw-toggle" data-id="${id}" aria-label="Show password">Show</button></div></div>`;
+const googleBlock = () => CONFIG.googleLogin ? `<button type="button" class="btn btn-o" style="height:48px" data-act="google">${GOOGLE_ICON} Continue with Google</button>
+  <div class="row meta" style="flex-wrap:nowrap;font-weight:700;letter-spacing:.08em"><span style="flex:1;height:1px;background:var(--line)"></span>OR<span style="flex:1;height:1px;background:var(--line)"></span></div>` : "";
+async function pageLogin(mode = "login") {
+  if (S.userId && mode !== "reset") { location.hash = sessionStorage.getItem("aipulse-next") || "#/"; return ""; }
+  const err = `<p class="err" role="alert">${esc(ui.err.login || "")}</p>`;
+  const busy = (t, b) => `<button class="btn btn-p" style="height:48px" ${ui.busy ? "disabled" : ""}>${ui.busy ? b : t}</button>`;
+  if (ui.ok.login) return authShell("Check your email", "", `<div class="note c-news" role="status">${esc(ui.ok.login)}</div><a class="link" href="#/login" data-act="auth-reset">Back to log in</a>`);
+  if (mode === "signup") return authShell(`Join ${esc(SITE)}`, "Free. Ask questions, vote, forecast and discuss the latest in AI.", `${googleBlock()}
+    <form class="stack" data-form="signup">
+      <div><label class="label" for="su-name">Your name</label><input class="field" id="su-name" name="name" autocomplete="name" maxlength="50" required placeholder="How you'll appear on the site"></div>
+      <div><label class="label" for="su-email">Email</label><input class="field" id="su-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+      ${pwField("su-pw", "Create a password", "new-password")}
+      ${err}${busy("Create account", "Creating your account…")}
+    </form>
+    <p class="meta" style="text-align:center;font-size:15px">Already have an account? <a class="link" href="#/login">Log in</a></p>`);
+  if (mode === "forgot") return authShell("Reset your password", "Enter your email and we'll send you a link to choose a new password.", `
+    <form class="stack" data-form="forgot"><div><label class="label" for="fg-email">Email</label><input class="field" id="fg-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+      ${err}${busy("Send reset link", "Sending…")}</form>
+    <p class="meta" style="text-align:center;font-size:15px"><a class="link" href="#/login">Back to log in</a></p>`);
+  if (mode === "reset") {
+    if (!S.userId) return authShell("Link expired", "This password reset link has expired or was already used.", `<a class="btn btn-p" href="#/forgot">Send a new link</a>`);
+    return authShell("Choose a new password", "", `<form class="stack" data-form="newpw">${pwField("np-pw", "New password", "new-password")}${err}${busy("Save new password", "Saving…")}</form>`);
+  }
+  return authShell(`Log in to ${esc(SITE)}`, "", `${googleBlock()}
+    <form class="stack" data-form="pwlogin">
+      <div><label class="label" for="li-email">Email</label><input class="field" id="li-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+      ${pwField("li-pw", "Password", "current-password")}
+      <div class="row between"><a class="link" style="font-size:14px" href="#/forgot">Forgot password?</a><button type="button" class="link" style="border:0;background:none;padding:0;cursor:pointer;font-size:14px" data-act="magic">Email me a sign-in link instead</button></div>
+      ${err}${busy("Log in", "Logging in…")}
+    </form>
+    <p class="meta" style="text-align:center;font-size:15px">New here? <a class="link" href="#/signup">Create a free account</a></p>`);
 }
 async function pageAdmin() {
   const p = me();
@@ -1087,7 +1118,7 @@ async function render({ keepScroll = false } = {}) {
   const y = window.scrollY;
   const focusId = document.activeElement && document.activeElement.id;
   let rail = true, page;
-  if (!head || head === "ask" || head === "settings" || head === "login" || head === "admin" || head === "guidelines" || head === "terms" || head === "privacy") rail = false;
+  if (!head || head === "ask" || head === "settings" || head === "login" || head === "signup" || head === "forgot" || head === "reset" || head === "admin" || head === "guidelines" || head === "terms" || head === "privacy") rail = false;
   if (!keepScroll) document.title = SITE + " — AI news, polls and discussion";
   try {
     if (!keepScroll && !app.querySelector(".main")) app.innerHTML = shell(r, `<div class="skeleton"></div><div class="skeleton"></div>`, false, "");
@@ -1107,7 +1138,10 @@ async function render({ keepScroll = false } = {}) {
       : head === "search" ? await pageSearch(a)
       : head === "ask" ? await pageAsk(["question", "discussion", "poll"].includes(a) ? a : "question")
       : head === "settings" ? await pageSettings()
-      : head === "login" ? await pageLogin()
+      : head === "login" ? await pageLogin("login")
+      : head === "signup" ? await pageLogin("signup")
+      : head === "forgot" ? await pageLogin("forgot")
+      : head === "reset" ? await pageLogin("reset")
       : head === "admin" ? await pageAdmin()
       : head === "guidelines" ? pageGuidelines()
       : head === "terms" ? pageTerms()
@@ -1170,6 +1204,19 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "logout": await sb.auth.signOut(); return;
+    case "pw-toggle": {
+      const inp = document.getElementById(id); if (!inp) return;
+      const show = inp.type === "password"; inp.type = show ? "text" : "password";
+      el.textContent = show ? "Hide" : "Show"; el.setAttribute("aria-label", show ? "Hide password" : "Show password"); return;
+    }
+    case "auth-reset": ui.ok.login = ""; ui.err.login = ""; return;
+    case "magic": {
+      const email = (document.getElementById("li-email") || {}).value || "";
+      if (!/.+@.+\..+/.test(email)) { ui.err.login = "Type your email above first."; return refresh(); }
+      const { error } = await sb.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: false } });
+      if (error) { ui.err.login = (error.message || "").toLowerCase().includes("rate limit") ? "Too many emails were sent in the last hour. Please try again later." : errText(error); return refresh(); }
+      ui.ok.login = `We sent a sign-in link to ${email.trim()}. Open it in this browser.`; return refresh();
+    }
     case "google": {
       sessionStorage.setItem("aipulse-next", sessionStorage.getItem("aipulse-next") || "#/");
       const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + location.pathname } });
@@ -1237,13 +1284,33 @@ document.addEventListener("submit", async (e) => {
       location.hash = q ? "#/search/" + encodeURIComponent(q) : "#/search";
       return;
     }
-    if (kind === "login") {
-      const email = String(fd.get("email") || "").trim();
+    if (kind === "signup" || kind === "pwlogin" || kind === "forgot" || kind === "newpw") {
+      const email = String(fd.get("email") || "").trim(), password = String(fd.get("password") || "");
+      if (kind !== "forgot" && password.length < 8) { ui.err.login = "Passwords need at least 8 characters."; return refresh(); }
       ui.err.login = ""; ui.busy = true; await refresh();
-      const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+      const back = location.origin + location.pathname;
+      let res;
+      if (kind === "signup") res = await sb.auth.signUp({ email, password, options: { data: { full_name: String(fd.get("name") || "").trim() }, emailRedirectTo: back } });
+      else if (kind === "pwlogin") res = await sb.auth.signInWithPassword({ email, password });
+      else if (kind === "forgot") res = await sb.auth.resetPasswordForEmail(email, { redirectTo: back });
+      else res = await sb.auth.updateUser({ password });
       ui.busy = false;
-      if (error) ui.err.login = errText(error); else ui.ok.login = email;
-      return refresh();
+      const e = res.error;
+      if (e) {
+        const m = (e.message || "").toLowerCase();
+        ui.err.login = m.includes("invalid login") ? "Wrong email or password."
+          : m.includes("already registered") ? "There's already an account with this email. Log in instead, or reset your password."
+          : m.includes("rate limit") ? "Too many emails were sent in the last hour. Please try again later."
+          : m.includes("not confirmed") ? "Please confirm your email first: open the link we sent you."
+          : m.includes("weak") || m.includes("pwned") ? "That password is too easy to guess. Please choose a stronger one."
+          : errText(e);
+        return refresh();
+      }
+      if (kind === "signup" && !res.data.session) { ui.ok.login = `Almost done: we sent a confirmation link to ${email}. Open it to finish creating your account.`; return refresh(); }
+      if (kind === "forgot") { ui.ok.login = `If there's an account for ${email}, we sent it a link to choose a new password.`; return refresh(); }
+      if (kind === "newpw") { toast("Password saved."); location.hash = "#/"; return; }
+      if (kind === "signup") toast("Welcome to " + SITE + "!");
+      return;
     }
     if (kind === "comment") {
       const key = `${f.dataset.tt}|${f.dataset.tid}|${f.dataset.parent || ""}`;
@@ -1366,6 +1433,7 @@ document.addEventListener("input", (e) => {
 /* ---------------------------------------------------------------- start */
 window.addEventListener("hashchange", () => { ui.reply = null; ui.report = null; ui.confirm = null; ui.err = {}; ui.ok.profile = ""; render(); });
 sb.auth.onAuthStateChange((event) => {
+  if (event === "PASSWORD_RECOVERY") { ui.recovery = true; setTimeout(async () => { await loadProfile(); location.hash = "#/reset"; render(); }, 0); return; }
   if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
     setTimeout(async () => {
       await loadProfile();
@@ -1373,7 +1441,8 @@ sb.auth.onAuthStateChange((event) => {
         const next = sessionStorage.getItem("aipulse-next");
         sessionStorage.removeItem("aipulse-next");
         ui.ok.login = "";
-        if (route()[0] === "login" || next) { location.hash = next || "#/"; return; }
+        if (ui.recovery) { location.hash = "#/reset"; return; }
+        if (["login", "signup"].includes(route()[0]) || next) { location.hash = next || "#/"; return; }
       }
       if (event === "SIGNED_OUT") toast("You're logged out.");
       render({ keepScroll: true });
