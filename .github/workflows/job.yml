@@ -1,0 +1,62 @@
+# Runs AI Pulse's automatic jobs on GitHub's computers (free for public repositories).
+# Needs three repository secrets (Settings → Secrets and variables → Actions → New repository secret):
+#   SUPABASE_URL          your Supabase project URL
+#   SUPABASE_SECRET_KEY   the SECRET key from Supabase → Project Settings → API Keys
+#   ANTHROPIC_API_KEY     your Claude API key
+# Optional repository variables (same page, "Variables" tab): AUTO_PUBLISH_POLLS = true, SITE_URL
+name: Automatic jobs
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"   # news + moderation, every 30 minutes
+    - cron: "20 */6 * * *"   # new hot-topic polls, every 6 hours
+    - cron: "5 12 * * *"     # Discussion of the day, 12:05 UTC (8:05 am New York in summer, 7:05 am in winter)
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Jobs to run: news, moderate, polls, discussion or all"
+        default: "all"
+        required: true
+
+concurrency:
+  group: aipulse-jobs
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: jobs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: jobs/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Pick jobs
+        id: pick
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED: ${{ github.event.inputs.jobs }}
+        run: |
+          case "$SCHEDULE" in
+            "7,37 * * * *") JOBS="news moderate" ;;
+            "20 */6 * * *") JOBS="polls" ;;
+            "5 12 * * *")   JOBS="discussion" ;;
+            *)              JOBS="${REQUESTED:-all}" ;;
+          esac
+          echo "jobs=$(echo "$JOBS" | tr -cd 'a-z ,')" >> "$GITHUB_OUTPUT"
+      - name: Run jobs
+        run: node run.mjs $JOBS
+        env:
+          JOBS: ${{ steps.pick.outputs.jobs }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          AUTO_PUBLISH_POLLS: ${{ vars.AUTO_PUBLISH_POLLS }}
+          SITE_URL: ${{ vars.SITE_URL }}
