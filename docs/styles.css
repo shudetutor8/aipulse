@@ -225,3 +225,32 @@ h1, h2, h3, .logo, .t-feed, .t-page, .h-page, .section-h { font-family: var(--di
 .rate-btn[aria-pressed="true"].hype-on { background: var(--hot-soft); border-color: var(--hype-ink); color: var(--hype-ink); }
 .eyebrow-mono { font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; color: var(--muted); text-transform: uppercase; }
 .lead h2 a, .lead h2 { color: var(--ink); }
+
+/* ---------- G · Flagship layout */
+.top-in { gap: 12px 26px; }
+.topnav { display: flex; flex-wrap: wrap; gap: 2px 4px; font-weight: 600; font-size: 15px; }
+.topnav a { padding: 10px 10px; border-radius: 10px; }
+.topnav a:hover { background: var(--bg); }
+.topnav a.on { color: var(--accent); }
+.search-sm { flex: 0 1 260px; height: 42px; border-radius: 12px; margin-left: auto; }
+.top-right { margin-left: 0; }
+.layout.full .main { max-width: none; }
+.layout.full { padding-top: 28px; }
+.pulse-row .briefing { flex: 1 1 360px; }
+.brief-icon { flex: none; width: 52px; height: 52px; border-radius: 999px; background: var(--signal); color: var(--ink); display: inline-flex; align-items: center; justify-content: center; }
+.lead-row { display: flex; flex-wrap: wrap; gap: 28px; }
+.lead-row .lead { flex: 999 1 520px; min-width: 0; }
+.timeline { flex: 1 1 300px; display: flex; flex-direction: column; }
+.timeline h3 { margin: 0 0 12px; font-size: 20px; font-weight: 800; }
+.tl-item { display: flex; gap: 14px; }
+.tl-rail { display: flex; flex-direction: column; align-items: center; }
+.tl-dot { width: 12px; height: 12px; border-radius: 999px; background: #c9ceda; flex: none; margin-top: 3px; }
+.tl-dot.on { background: var(--signal); }
+.tl-line { flex: 1; width: 2px; background: var(--line); }
+.tl-body { padding-bottom: 18px; display: flex; flex-direction: column; gap: 2px; }
+.tl-body a { font-weight: 600; line-height: 1.35; }
+.tl-body a:hover { text-decoration: underline; }
+.timeline .link { margin-top: 4px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px; align-items: start; }
+.section-title { font-size: 30px; font-weight: 900; margin: 12px 0 0; }
+@media (max-width: 760px) { .search-sm { flex: 1 1 100%; order: 10; } .topnav { order: 11; width: 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .topnav a { white-space: nowrap; } }
