@@ -2,7 +2,9 @@
 # Needs three repository secrets (Settings → Secrets and variables → Actions → New repository secret):
 #   SUPABASE_URL          your Supabase project URL
 #   SUPABASE_SECRET_KEY   the SECRET key from Supabase → Project Settings → API Keys
-#   GROQ_API_KEY          free AI key from console.groq.com (or ANTHROPIC_API_KEY for paid Claude)
+#   GROQ_API_KEY          optional: free AI key from console.groq.com
+# Without GROQ_API_KEY (or when Groq is over its free limit), a free open-source AI model
+# (Qwen3-4B, Apache 2.0) runs right here on GitHub's computer instead.
 # Optional repository variables (same page, "Variables" tab): AUTO_PUBLISH_POLLS = true, SITE_URL
 name: Automatic jobs
 
@@ -18,6 +20,9 @@ on:
         default: "all"
         required: true
 
+env:
+  LLAMA_TAG: b11800   # llama.cpp release used for the built-in AI (falls back to the newest if missing)
+
 concurrency:
   group: aipulse-jobs
   cancel-in-progress: false
@@ -25,7 +30,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: jobs
@@ -37,6 +42,41 @@ jobs:
           cache: npm
           cache-dependency-path: jobs/package-lock.json
       - run: npm ci --no-audit --no-fund
+      # Free built-in AI: downloaded once, then kept in GitHub's cache.
+      - name: Restore built-in AI model
+        id: localai
+        uses: actions/cache@v4
+        with:
+          path: ~/localai
+          key: localai-qwen3-4b-q4km-llamacpp-${{ env.LLAMA_TAG }}
+      - name: Download built-in AI model (first run only)
+        if: steps.localai.outputs.cache-hit != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: .
+        run: |
+          set -e
+          trap 'echo "Download failed; will try again next run."; rm -rf ~/localai' ERR
+          mkdir -p ~/localai && cd ~/localai
+          find_asset() { gh release view "$1" --repo ggml-org/llama.cpp --json assets --jq '.assets[].name' | grep -E 'bin-ubuntu-x64\.(zip|tar\.gz)$' | head -1; }
+          TAG="$LLAMA_TAG"
+          ASSET="$(find_asset "$TAG" || true)"
+          if [ -z "$ASSET" ]; then
+            TAG="$(gh release view --repo ggml-org/llama.cpp --json tagName --jq .tagName)"
+            ASSET="$(find_asset "$TAG")"
+          fi
+          echo "AI engine: llama.cpp $TAG ($ASSET)"
+          gh release download "$TAG" --repo ggml-org/llama.cpp --pattern "$ASSET" --clobber
+          rm -rf engine && mkdir engine
+          case "$ASSET" in *.zip) unzip -q "$ASSET" -d engine ;; *) tar -xzf "$ASSET" -C engine ;; esac
+          rm -f "$ASSET"
+          SERVER="$(find "$PWD/engine" -type f -name llama-server | head -1)"
+          chmod +x "$SERVER"
+          echo "$SERVER" > server-path.txt
+          curl -fsSL --retry 3 -o model.gguf.part "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+          mv model.gguf.part model.gguf
+          ls -la ~/localai
       - name: Pick jobs
         id: pick
         env:
@@ -62,3 +102,4 @@ jobs:
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
           AUTO_PUBLISH_POLLS: ${{ vars.AUTO_PUBLISH_POLLS }}
           SITE_URL: ${{ vars.SITE_URL }}
+          LOCAL_AI_DIR: /home/runner/localai
