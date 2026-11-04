@@ -287,6 +287,40 @@ async function feedSection(key, opts, empty) {
   return feedList(items, x, empty) + pager(key, hasMore);
 }
 
+/* ---------------------------------------------------------------- sharing */
+const SOCIAL_NAMES = { x: "X", instagram: "Instagram", facebook: "Facebook", threads: "Threads", tiktok: "TikTok", youtube: "YouTube", linkedin: "LinkedIn", reddit: "Reddit", bluesky: "Bluesky", discord: "Discord" };
+const pageUrl = (hash) => location.origin + location.pathname + hash;
+function shareBar(hash, title) {
+  const u = encodeURIComponent(pageUrl(hash)), t = encodeURIComponent(title), ut = encodeURIComponent(title + " " + pageUrl(hash));
+  const ext = (href, label) => `<a class="share-btn" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  return `<div class="share" aria-label="Share">
+    <span class="share-h">Share</span>
+    ${navigator.share ? `<button type="button" class="share-btn share-main" data-act="share-native" data-url="${esc(hash)}" data-title="${esc(title)}">Share…</button>` : ""}
+    ${ext(`https://x.com/intent/post?text=${t}&url=${u}`, "X")}
+    ${ext(`https://www.facebook.com/sharer/sharer.php?u=${u}`, "Facebook")}
+    ${ext(`https://www.linkedin.com/sharing/share-offsite/?url=${u}`, "LinkedIn")}
+    ${ext(`https://www.reddit.com/submit?url=${u}&title=${t}`, "Reddit")}
+    ${ext(`https://www.threads.net/intent/post?text=${ut}`, "Threads")}
+    ${ext(`https://bsky.app/intent/compose?text=${ut}`, "Bluesky")}
+    ${ext(`https://api.whatsapp.com/send?text=${ut}`, "WhatsApp")}
+    ${ext(`https://t.me/share/url?url=${u}&text=${t}`, "Telegram")}
+    <button type="button" class="share-btn" data-act="share-insta" data-url="${esc(hash)}" data-title="${esc(title)}">Instagram</button>
+    <a class="share-btn" href="mailto:?subject=${t}&body=${ut}">Email</a>
+    <button type="button" class="share-btn" data-act="copy-link" data-url="${esc(hash)}">Copy link</button>
+  </div>`;
+}
+function followLinks() {
+  const so = CONFIG.social || {};
+  const items = Object.entries(SOCIAL_NAMES).filter(([k]) => /^https:\/\//.test(so[k] || ""));
+  return items.length ? `<nav class="follow" aria-label="Follow ${esc(SITE)}"><span>Follow us</span>${items.map(([k, n]) => `<a href="${esc(so[k])}" target="_blank" rel="noopener noreferrer me">${n}</a>`).join("")}</nav>` : "";
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) {
+    const ta = document.createElement("textarea"); ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); let ok = false; try { ok = document.execCommand("copy"); } catch (e2) {} ta.remove(); return ok;
+  }
+}
+
 /* ---------------------------------------------------------------- predictions + models */
 const predOpen = (p) => p.status === "live" && new Date(p.closes_at).getTime() > Date.now();
 const longDate = (d) => new Date(String(d).length === 10 ? d + "T12:00:00Z" : d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -437,6 +471,7 @@ function shell(route, content, rail, railHtml) {
       ${rail ? railHtml : ""}
     </div></div>
     <footer class="footer"><div class="wrap"><p style="max-width:60ch">© ${new Date().getFullYear()} ${esc(SITE)}. News is summarized by AI from the linked sources. Polls, predictions and daily discussions are generated automatically. Predictions are for fun, with no money involved. Nothing here is investment advice.</p>
+      ${followLinks()}
       <nav aria-label="Footer"><a href="#/guidelines">Community guidelines</a><a href="#/terms">Terms</a><a href="#/privacy">Privacy</a></nav></div></footer>`;
 }
 function railView(r) {
@@ -457,7 +492,7 @@ const needLogin = (next) => { sessionStorage.setItem("aipulse-next", next); retu
 
 /* ---------------------------------------------------------------- pages */
 let pulsePeak = "";
-function pulseChart(stories) {
+function pulseChart(stories, W = 640, Hh = 170) {
   const now = Date.now(), hourMs = 3600e3;
   const start = now - 23 * hourMs - (now % hourMs);
   const counts = Array(24).fill(0);
@@ -467,7 +502,7 @@ function pulseChart(stories) {
   }
   const max = Math.max(4, ...counts);
   const top = Math.ceil(max / 4) * 4;
-  const W = 640, Hh = 170, L = 34, R = 10, T = 12, B = 26, pw = W - L - R, ph = Hh - T - B;
+  const L = 34, R = 10, T = 12, B = 26, pw = W - L - R, ph = Hh - T - B;
   const x = (i) => L + (i * pw) / 23, y = (v) => T + ph - (v / top) * ph;
   const pts = counts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
   const peak = counts.indexOf(Math.max(...counts));
@@ -485,7 +520,7 @@ function pulseChart(stories) {
 async function homeData() {
   const since = new Date(Date.now() - 24 * 3600e3).toISOString();
   const [stories, editorial, poll, question, trending, tickers, preds, leaders, models] = await Promise.all([
-    sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at, article_at")
+    sb.from("news_stories").select("id, title, summary, topic, image_url, source_count, comment_count, real_votes, hype_votes, published_at, created_at, article_at")
       .eq("is_hidden", false).gte("created_at", since).order("source_count", { ascending: false }).limit(1000),
     sb.from("posts").select("id, title, body, comment_count, created_at, story_id").eq("is_editorial", true).eq("status", "visible").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     sb.from("polls").select("*").eq("status", "live").order("total_votes", { ascending: false }).order("published_at", { ascending: false }).limit(1).maybeSingle(),
@@ -507,6 +542,58 @@ async function leadExtras(lead) {
   ]);
   return { timeline: timeline.data || [], mine: mine.data ? mine.data.value : null };
 }
+/* Top-stories slideshow: a big picture headline plus a side list; changes every 5 seconds. */
+function heroArt(s, cls) {
+  const [bg, fg] = STORY_TINT[s.topic] || STORY_TINT.general;
+  return s.image_url
+    ? `<img class="${cls}" src="${esc(s.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML='<span class=&quot;${cls} hero-fallback&quot; style=&quot;background:${bg};color:${fg}&quot;></span>'">`
+    : `<span class="${cls} hero-fallback" style="background:linear-gradient(135deg, ${bg}, #0f1222 140%);color:${fg}" aria-hidden="true"><span>${esc(topicLabel(s.topic))}</span></span>`;
+}
+function heroSection(list) {
+  if (!list.length) return `<section class="pulse"><h1>Today's AI news</h1><p style="color:var(--dark-muted)">The first news of the day is on its way. News is collected every 30 minutes.</p></section>`;
+  return `<section class="hero" data-hero aria-roledescription="carousel" aria-label="Top AI stories">
+    <div class="hero-main">
+      ${list.map((s, i) => `<a class="hero-slide ${i === 0 ? "on" : ""}" href="#/news/${s.id}" data-slide="${i}" ${i ? 'aria-hidden="true" tabindex="-1"' : ""} aria-roledescription="slide" aria-label="${i + 1} of ${list.length}">
+        ${heroArt(s, "hero-img")}
+        <span class="hero-shade"></span>
+        <span class="hero-text">
+          <span class="row" style="gap:8px"><span class="chip hero-chip">${esc(topicLabel(s.topic))}</span>${s.article_at ? `<span class="chip c-full">Full story</span>` : ""}<span class="hero-meta">${plural(s.source_count, "source")} · ${ago(s.published_at || s.created_at)}</span></span>
+          <span class="hero-title">${esc(s.title)}</span>
+          ${s.summary ? `<span class="hero-sum">${esc(s.summary)}</span>` : ""}
+          <span class="hero-cta">${s.article_at ? "Read the full story" : "Read more"} →</span>
+        </span></a>`).join("")}
+      <div class="hero-ctrl"><button type="button" class="hero-pause" data-act="hero-pause" aria-label="Pause the slideshow">❚❚</button>
+        <span class="hero-dots">${list.map((_, i) => `<button type="button" class="hero-dot ${i === 0 ? "on" : ""}" data-act="hero-go" data-val="${i}" aria-label="Show story ${i + 1}"></button>`).join("")}</span></div>
+    </div>
+    <ol class="hero-side" aria-label="Top stories">
+      ${list.map((s, i) => `<li><button type="button" class="hero-item ${i === 0 ? "on" : ""}" data-act="hero-go" data-val="${i}" aria-current="${i === 0}">
+        ${heroArt(s, "hero-thumb")}
+        <span class="hero-item-text"><span class="hero-item-topic">${esc(topicLabel(s.topic))}</span><span class="hero-item-title">${esc(s.title)}</span></span>
+        <span class="hero-bar" aria-hidden="true"></span></button></li>`).join("")}
+      <li><a class="link hero-all" href="#/news">All AI news →</a></li>
+    </ol>
+  </section>`;
+}
+const HERO = { timer: null, i: 0, paused: false, hover: false };
+function heroShow(i) {
+  const root = document.querySelector("[data-hero]"); if (!root) return;
+  const slides = root.querySelectorAll(".hero-slide"); const n = slides.length; if (!n) return;
+  HERO.i = ((i % n) + n) % n;
+  slides.forEach((el, k) => { el.classList.toggle("on", k === HERO.i); el.setAttribute("aria-hidden", String(k !== HERO.i)); el.tabIndex = k === HERO.i ? 0 : -1; });
+  root.querySelectorAll(".hero-item").forEach((el, k) => { el.classList.toggle("on", k === HERO.i); el.setAttribute("aria-current", String(k === HERO.i)); });
+  root.querySelectorAll(".hero-dot").forEach((el, k) => el.classList.toggle("on", k === HERO.i));
+}
+function heroTick() { if (!HERO.paused && !HERO.hover && document.visibilityState === "visible") heroShow(HERO.i + 1); }
+function mountHero() {
+  clearInterval(HERO.timer); HERO.timer = null; HERO.i = 0; HERO.hover = false;
+  const root = document.querySelector("[data-hero]"); if (!root) return;
+  root.classList.toggle("paused", HERO.paused);
+  root.addEventListener("mouseenter", () => { HERO.hover = true; root.classList.add("hovering"); });
+  root.addEventListener("mouseleave", () => { HERO.hover = false; root.classList.remove("hovering"); });
+  root.addEventListener("focusin", () => { HERO.hover = true; root.classList.add("hovering"); });
+  root.addEventListener("focusout", (e) => { if (!root.contains(e.relatedTarget)) { HERO.hover = false; root.classList.remove("hovering"); } });
+  HERO.timer = setInterval(heroTick, 5000);
+}
 async function pageHome() {
   const sort = ui.sort.home || "foryou";
   const p = me();
@@ -519,7 +606,7 @@ async function pageHome() {
     const { stories } = d;
     const lead = stories[0];
     const [extras, pollOpts, myPoll, answer, myFc] = await Promise.all([
-      lead ? leadExtras(lead) : null,
+      null,
       d.poll ? sb.from("poll_options").select("*").eq("poll_id", d.poll.id).order("position") : { data: [] },
       d.poll && S.userId ? sb.from("poll_votes").select("option_id").eq("poll_id", d.poll.id).eq("user_id", S.userId).maybeSingle() : { data: null },
       d.question && d.question.comment_count ? sb.from("comments").select("*").eq("target_type", "post").eq("target_id", d.question.id).is("parent_id", null).order("score", { ascending: false }).limit(1).maybeSingle() : { data: null },
@@ -530,37 +617,13 @@ async function pageHome() {
     const topics = new Set(stories.map((s) => s.topic)).size;
     const brief = stories.slice(0, 3);
 
-    const pulse = stories.length ? `<section class="pulse-row" aria-label="Today in AI">
-      <div class="pulse">
-        <div class="row between" style="align-items:baseline"><h1>Today's AI pulse</h1><span class="mono" style="font-size:12px;color:var(--dark-muted)">LAST 24 HOURS</span></div>
-        <div class="stats"><span><b>${fmt(stories.length)}</b> <span>STORIES</span></span><span><b>${fmt(articles)}</b> <span>ARTICLES</span></span><span><b>${topics}</b> <span>TOPICS</span></span></div>
-        <figure>${pulseChart(stories)}<figcaption>New AI stories per hour, from every source we track${pulsePeak ? ` · <span style="color:#FFB547">● ${pulsePeak}</span>` : ""}</figcaption></figure>
-      </div>
-      <aside class="card pad stack briefing" aria-label="60-second briefing">
-        <div class="row" style="flex-wrap:nowrap;gap:14px"><span class="brief-icon" aria-hidden="true">${icon("news", 22)}</span>
-          <div><h2 style="font-size:22px;font-weight:800">The 60-second briefing</h2><p class="meta">The ${brief.length} most-covered AI stories right now</p></div></div>
-        <ol>${brief.map((s) => `<li><b>${esc(topicLabel(s.topic))}:</b> <a href="#/news/${s.id}">${esc(s.title)}</a></li>`).join("")}</ol>
-        <a class="link" style="margin-top:auto" href="#/news">All AI news →</a>
-      </aside>
-    </section>` : `<section class="pulse"><h1>Today's AI pulse</h1><p style="color:var(--dark-muted)">The first news of the day is on its way. News is collected every 30 minutes.</p></section>`;
-
-    const leadCard = lead ? `<section class="card pad lead-row">
-      <article class="lead">
-        <span class="eyebrow-mono">Top story · ${esc(topicLabel(lead.topic))} · ${plural(lead.source_count, "source")} · ${ago(lead.published_at || lead.created_at)}</span>
-        <h2><a href="#/news/${lead.id}" class="title-link">${esc(lead.title)}</a></h2>
-        ${lead.summary ? `<p class="body" style="font-size:18px;max-width:72ch">${esc(lead.summary)}</p>` : ""}
-        ${hypeBar(lead)}
-        ${rateButtons(lead.id, extras.mine)}
-        <div class="row"><a class="btn btn-p" href="#/news/${lead.id}">${lead.article_at ? "Read the full story" : "Read more"} · ${plural(lead.comment_count, "comment")}</a></div>
-      </article>
-      <aside class="timeline" aria-label="More on this topic">
-        <h3>More in ${esc(topicLabel(lead.topic))}</h3>
-        ${extras.timeline.length ? extras.timeline.map((t, i) => `<div class="tl-item"><div class="tl-rail"><span class="tl-dot ${i === 0 ? "on" : ""}"></span>${i < extras.timeline.length - 1 ? `<span class="tl-line"></span>` : ""}</div>
-          <div class="tl-body"><span class="eyebrow-mono">${ago(t.published_at || t.created_at)}</span><a href="#/news/${t.id}">${esc(t.title)}</a></div></div>`).join("") : `<p class="meta">More stories on this topic will appear here.</p>`}
-        <a class="link" href="#/t/${esc(lead.topic)}">Follow ${esc(topicLabel(lead.topic))} →</a>
-      </aside>
+    const pulse = stories.length ? `<section class="pulse pulse-wide" aria-label="Today in AI">
+        <div class="stack" style="gap:10px"><span class="mono" style="font-size:12px;color:var(--dark-muted)">LAST 24 HOURS</span><h2 class="pulse-h">Today's AI pulse</h2>
+          <div class="stats"><span><b>${fmt(stories.length)}</b> <span>STORIES</span></span><span><b>${fmt(articles)}</b> <span>ARTICLES</span></span><span><b>${topics}</b> <span>TOPICS</span></span></div>
+          <p class="pulse-cap">New AI stories per hour, from every source we track${pulsePeak ? `<br><span style="color:#FFB547">● ${pulsePeak}</span>` : ""}</p></div>
+        <figure>${pulseChart(stories, 1000, 200)}</figure>
     </section>` : "";
-
+    const hero = heroSection(stories.slice(0, 5));
     const ed = d.editorial;
     const debate = ed ? `<article class="card pad stack debate">
         <span class="eyebrow-mono">Debate of the day · started by AI from today's news</span>
@@ -599,7 +662,7 @@ async function pageHome() {
     const modelSection = topModels.length ? `<section class="stack" aria-label="The Model Index">
       <div class="sec-head"><h2>The Model Index</h2><span class="meta">How readers rate the AI tools they actually use, and how often each is in the news</span></div>
       <div class="card pad stack">${modelTable(topModels)}<a class="link" href="#/models">Full index and rate the models you use →</a></div></section>` : "";
-    top = `${pulse}${leadCard}${predSection}
+    top = `${hero}${predSection}
       ${debate || pollCardHtml ? `<section class="grid2">${debate}${pollCardHtml}</section>` : ""}
       <section class="grid2">${questionCard}${side}</section>
       ${modelSection}
@@ -657,6 +720,7 @@ async function pageStory(id) {
       </section>` : ""}
       ${hypeBar(s)}
       ${rateButtons(s.id, myRating.data ? myRating.data.value : null)}
+      ${shareBar("#/news/" + s.id, s.title)}
       ${(links || []).length ? `<p class="credits"><span>Reported by</span> ${[...new Map(links.map((l) => [l.source_name, l])).values()].map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${esc(l.title)}">${esc(l.source_name)}</a>`).join(" · ")}</p>` : ""}
     </article>
     ${(talks || []).length ? `<section class="card pad"><h2 class="section-h" style="font-size:16px;margin-bottom:6px">Discussion of the day</h2>${talks.map((p) => `<a class="list-row" href="#/p/${p.id}"><b>${esc(p.title)}</b><span class="meta">${plural(p.comment_count, "reply", "replies")}</span></a>`).join("")}</section>` : ""}
@@ -744,6 +808,7 @@ async function pagePoll(id) {
       ${p.description ? `<p class="body" style="font-size:16px">${esc(p.description)}</p>` : ""}
       ${published ? pollWidget(p, options || [], mine.data ? mine.data.option_id : null) : `<p class="note c-warn">This poll is waiting for review. <a class="link" href="#/admin">Open admin</a></p>`}
       ${(stories.data || []).length ? `<div><h2 style="font-size:14px;font-weight:700">Based on</h2>${stories.data.map((s) => `<p><a class="link" style="font-size:14px" href="#/news/${s.id}">${esc(s.title)}</a></p>`).join("")}</div>` : ""}
+      ${published ? shareBar("#/polls/" + p.id, p.question + " Vote:") : ""}
     </article>
     ${published ? await commentsSection("poll", p.id, "Debate", "reply", "Explain your vote. What's your argument?") : ""}`;
 }
@@ -783,6 +848,7 @@ async function pagePrediction(id) {
   const live = p.status !== "pending" && p.status !== "rejected";
   return `<a class="link" href="#/predict">← All predictions</a>
     ${predCard(p, mine.get(p.id), true)}
+    <section class="card pad">${shareBar("#/predict/" + p.id, p.question + " Make your call:")}</section>
     ${(stories.data || []).length ? `<section class="card pad"><h2 style="font-size:14px;font-weight:700">Based on</h2>${stories.data.map((s) => `<p><a class="link" style="font-size:14px" href="#/news/${s.id}">${esc(s.title)}</a></p>`).join("")}</section>` : ""}
     ${live ? await commentsSection("prediction", p.id, "Discussion", "reply", "What makes you think so? Share your reasoning.") : `<p class="note c-warn">This prediction is waiting for review. <a class="link" href="#/admin">Open admin</a></p>`}`;
 }
@@ -855,6 +921,7 @@ async function pagePost(id, held) {
         ${own ? (ui.confirm === "p-" + p.id ? `<span class="row meta">Delete this post and its replies? <button type="button" class="ghost danger" data-act="del-post" data-id="${p.id}">Delete</button><button type="button" class="ghost" data-act="unconfirm">Keep</button></span>` : `<button type="button" class="ghost" data-act="confirm" data-key="p-${p.id}">Delete</button>`)
           : S.userId && !p.is_editorial ? `<button type="button" class="ghost" data-act="report-open" data-key="post-${p.id}">${icon("flag", 15)} Report</button>` : ""}</div>
       ${ui.report === "post-" + p.id ? reportBox("post", p.id) : ""}
+      ${p.status === "visible" ? shareBar("#/p/" + p.id, p.title) : ""}
     </article>
     ${p.status === "visible" ? await commentsSection("post", p.id, isQ ? "Answers" : "Replies", isQ ? "answer" : "reply", isQ ? "Write your answer…" : "Add to the discussion…", { best: isQ ? p.best_comment_id : null, canBest: isQ && own, postId: p.id }) : ""}`;
 }
@@ -1159,6 +1226,7 @@ async function render({ keepScroll = false } = {}) {
     if (seq !== renderSeq) return;
     app.innerHTML = shell(r, page, rail, railHtml);
     mountTV();
+    mountHero();
   } catch (e) {
     console.error(e);
     if (seq !== renderSeq) return;
@@ -1212,6 +1280,29 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "logout": await sb.auth.signOut(); return;
+    case "copy-link": toast((await copyText(pageUrl(el.dataset.url))) ? "Link copied." : "Couldn't copy. Copy it from the address bar."); return;
+    case "share-native":
+      try { await navigator.share({ title: el.dataset.title, text: el.dataset.title, url: pageUrl(el.dataset.url) }); } catch (e) { /* closed */ }
+      return;
+    case "share-insta": {
+      const url = pageUrl(el.dataset.url);
+      if (navigator.share && /Android|iPhone|iPad/i.test(navigator.userAgent)) { try { await navigator.share({ title: el.dataset.title, url }); } catch (e) {} return; }
+      toast((await copyText(url)) ? "Link copied. Paste it into your Instagram story (link sticker), bio or a DM." : "Copy the link from the address bar to share on Instagram.");
+      return;
+    }
+    case "hero-go": {
+      heroShow(Number(val));
+      clearInterval(HERO.timer); HERO.timer = setInterval(heroTick, 5000);
+      const root = document.querySelector("[data-hero]");
+      if (root) { root.classList.remove("restart"); void root.offsetWidth; root.classList.add("restart"); }
+      return;
+    }
+    case "hero-pause": {
+      HERO.paused = !HERO.paused;
+      const root = document.querySelector("[data-hero]"); if (root) root.classList.toggle("paused", HERO.paused);
+      el.textContent = HERO.paused ? "▶" : "❚❚"; el.setAttribute("aria-label", HERO.paused ? "Play the slideshow" : "Pause the slideshow");
+      return;
+    }
     case "pw-toggle": {
       const inp = document.getElementById(id); if (!inp) return;
       const show = inp.type === "password"; inp.type = show ? "text" : "password";
