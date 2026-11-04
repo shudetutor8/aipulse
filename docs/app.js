@@ -336,25 +336,24 @@ async function commentsSection(tt, tid, title, noun, placeholder, ctx = {}) {
 }
 
 /* ---------------------------------------------------------------- shell */
-const NAV = [["", "Home", "home"], ["news", "AI News", "news"], ["stocks", "AI Stocks", "chart"], ["polls", "Polls", "poll"], ["discussions", "Discussions", "chat"], ["questions", "Q&A", "q"]];
+const NAV = [["", "Today"], ["news", "News"], ["polls", "Polls"], ["discussions", "Debates"], ["questions", "Q&A"], ["stocks", "Stocks"]];
 function shell(route, content, rail, railHtml) {
   const p = me();
   const head = route[0] || "";
   const active = { p: null, t: null, u: null }[head] === null ? null : head;
   return `<header class="top"><div class="wrap top-in">
       <a class="logo" href="#/">${LOGO}${esc(SITE)}</a>
-      <form class="search" role="search" data-form="search"><span aria-hidden="true">${icon("search")}</span><label class="sr" for="q">Search</label><input id="q" name="q" type="search" placeholder="Search questions, news, polls" value="${esc(route[0] === "search" ? decodeURIComponent(route[1] || "") : "")}"></form>
+      <nav class="topnav" aria-label="Sections">${NAV.map(([id, l]) => `<a href="#/${id}" class="${active === id ? "on" : ""}" ${active === id ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>
+      <form class="search search-sm" role="search" data-form="search"><span aria-hidden="true">${icon("search")}</span><label class="sr" for="q">Search</label><input id="q" name="q" type="search" placeholder="Search questions, news, polls" value="${esc(route[0] === "search" ? decodeURIComponent(route[1] || "") : "")}"></form>
       <div class="top-right">${p ? `
         <details class="menu"><summary aria-label="Account menu">${avatar(p, 40)}</summary><div class="menu-panel">
           <div style="padding:8px 12px"><div style="font-weight:700">${esc(nameOf(p))}</div><div class="meta">@${esc(p.username)}</div></div>
           <a href="#/u/${esc(p.username)}">Your profile</a><a href="#/settings">Settings</a>${p.is_admin ? `<a href="#/admin">Admin</a>` : ""}
           <button type="button" data-act="logout">Log out</button></div></details>
-        <a class="btn btn-p" href="#/ask/question">Ask or post</a>` : `
-        <a class="btn btn-o" href="#/login">Log in</a><a class="btn btn-p" href="#/login">Join free</a>`}</div>
+        <a class="btn btn-p" href="#/ask/question">Ask</a>` : `
+        <a class="btn btn-p" href="#/login">Sign in</a>`}</div>
     </div></header>
-    <div class="wrap"><div class="layout ${rail ? "" : "plain"}">
-      ${rail ? `<nav class="nav" aria-label="Sections">${NAV.map(([id, l, ic]) => `<a href="#/${id}" class="${active === id ? "on" : ""}" ${active === id ? 'aria-current="page"' : ""}>${icon(ic)}${l}</a>`).join("")}
-        <h2>Spaces</h2><div class="spaces stack" style="gap:0">${NAV_SPACES.map((id) => `<a href="#/t/${id}" class="${head === "t" && route[1] === id ? "on" : ""}">${esc(topicLabel(id))}</a>`).join("")}</div></nav>` : ""}
+    <div class="wrap"><div class="layout ${rail ? "" : head === "" ? "full" : "plain"}">
       <main class="main" id="main" tabindex="-1">${content}</main>
       ${rail ? railHtml : ""}
     </div></div>
@@ -363,6 +362,7 @@ function shell(route, content, rail, railHtml) {
 }
 function railView(r) {
   return `<aside class="rail">
+    <section class="card pad"><h2>Spaces</h2><div class="row">${NAV_SPACES.map((id) => `<a class="pill" style="height:36px;font-size:13px" href="#/t/${id}">${esc(topicLabel(id))}</a>`).join("")}</div></section>
     <section class="card pad"><h2>Trending topics</h2>${r.trending.map((t, i) => `<div class="list-row" style="justify-content:flex-start;align-items:flex-start"><span style="width:16px;font-weight:800;color:var(--accent)">${i + 1}</span><a class="title-link" style="font-size:14px;font-weight:600" href="#/${t.kind === "poll" ? "polls" : "p"}/${t.id}">${esc(t.title)}</a></div>`).join("") || `<p class="meta">Nothing trending yet. Start a discussion!</p>`}</section>
     <section class="card pad"><div class="row between" style="margin-bottom:6px"><h2 style="margin:0">AI stocks</h2><span class="meta">Most discussed</span></div>
       ${r.tickers.map((t) => `<a class="list-row" href="#/stocks/${t.symbol}"><b>${t.symbol}</b><span class="meta">${plural(t.comment_count, "comment")}</span></a>`).join("")}
@@ -403,50 +403,114 @@ function pulseChart(stories) {
     ${counts[peak] ? `<circle cx="${x(peak)}" cy="${y(counts[peak])}" r="5" fill="#FFB547"/>` : ""}
     ${xl}</svg>`;
 }
-async function pulseSection() {
+async function homeData() {
   const since = new Date(Date.now() - 24 * 3600e3).toISOString();
-  const { data } = await sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at")
-    .eq("is_hidden", false).gte("created_at", since).order("source_count", { ascending: false }).limit(1000);
-  const stories = data || [];
-  if (!stories.length) return "";
-  const articles = stories.reduce((a, s) => a + (s.source_count || 1), 0);
-  const topics = new Set(stories.map((s) => s.topic)).size;
-  const lead = stories[0];
-  const brief = stories.slice(0, 3);
-  let mine = null;
-  if (S.userId) {
-    const { data: r } = await sb.from("story_ratings").select("value").eq("story_id", lead.id).eq("user_id", S.userId).maybeSingle();
-    mine = r ? r.value : null;
-  }
-  return `<section class="pulse-row" aria-label="Today in AI">
-      <div class="pulse">
-        <div class="row between" style="align-items:baseline"><h1>Today's AI pulse</h1><span class="mono" style="font-size:12px;color:var(--dark-muted)">LAST 24 HOURS</span></div>
-        <div class="stats"><span><b>${fmt(stories.length)}</b> <span>STORIES</span></span><span><b>${fmt(articles)}</b> <span>ARTICLES</span></span><span><b>${topics}</b> <span>TOPICS</span></span></div>
-        <figure>${pulseChart(stories)}<figcaption>New AI stories per hour, from every source we track${pulsePeak ? ` · <span style="color:#FFB547">● ${pulsePeak}</span>` : ""}</figcaption></figure>
-      </div>
-      <aside class="card pad stack briefing" aria-label="60-second briefing">
-        <h2 style="font-size:22px;font-weight:800">The 60-second briefing</h2>
-        <p class="meta">The ${brief.length} most-covered AI stories right now</p>
-        <ol>${brief.map((s) => `<li><b>${esc(topicLabel(s.topic))}:</b> <a href="#/news/${s.id}">${esc(s.title)}</a></li>`).join("")}</ol>
-        <a class="link" style="margin-top:auto" href="#/news">All AI news →</a>
-      </aside>
-    </section>
-    <article class="card pad lead">
-      <span class="eyebrow-mono">Top story · ${esc(topicLabel(lead.topic))} · ${plural(lead.source_count, "source")} · ${ago(lead.published_at || lead.created_at)}</span>
-      <h2><a href="#/news/${lead.id}" class="title-link">${esc(lead.title)}</a></h2>
-      ${lead.summary ? `<p class="body" style="font-size:18px;max-width:72ch">${esc(lead.summary)}</p>` : ""}
-      ${hypeBar(lead)}
-      ${rateButtons(lead.id, mine)}
-      <div class="row"><a class="btn btn-p" href="#/news/${lead.id}">Read and discuss · ${lead.comment_count}</a></div>
-    </article>`;
+  const [stories, editorial, poll, question, trending, tickers] = await Promise.all([
+    sb.from("news_stories").select("id, title, summary, topic, source_count, comment_count, real_votes, hype_votes, published_at, created_at")
+      .eq("is_hidden", false).gte("created_at", since).order("source_count", { ascending: false }).limit(1000),
+    sb.from("posts").select("id, title, body, comment_count, created_at, story_id").eq("is_editorial", true).eq("status", "visible").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    sb.from("polls").select("*").eq("status", "live").order("total_votes", { ascending: false }).order("published_at", { ascending: false }).limit(1).maybeSingle(),
+    sb.from("posts").select("id, title, comment_count, score, best_comment_id").eq("kind", "question").eq("status", "visible").order("score", { ascending: false }).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    sb.from("feed").select("kind, id, title, comment_count").neq("kind", "story").gte("created_at", new Date(Date.now() - 7 * 24 * 3600e3).toISOString()).order("hot", { ascending: false }).limit(5),
+    sb.from("tickers").select("symbol, comment_count").eq("active", true).order("comment_count", { ascending: false }).order("symbol").limit(5),
+  ]);
+  return { stories: stories.data || [], editorial: editorial.data, poll: poll.data, question: question.data, trending: trending.data || [], tickers: tickers.data || [] };
+}
+async function leadExtras(lead) {
+  const [timeline, mine] = await Promise.all([
+    sb.from("news_stories").select("id, title, published_at, created_at").eq("is_hidden", false).eq("topic", lead.topic).neq("id", lead.id)
+      .gte("created_at", new Date(Date.now() - 14 * 24 * 3600e3).toISOString()).order("published_at", { ascending: false, nullsFirst: false }).limit(4),
+    S.userId ? sb.from("story_ratings").select("value").eq("story_id", lead.id).eq("user_id", S.userId).maybeSingle() : { data: null },
+  ]);
+  return { timeline: timeline.data || [], mine: mine.data ? mine.data.value : null };
 }
 async function pageHome() {
   const sort = ui.sort.home || "foryou";
   const p = me();
   const ask = (t) => (p ? `#/ask/${t}` : "#/login");
   const opts = sort === "hot" ? { sort: "hot", excludeNews: true } : { sort: sort === "foryou" ? "hot" : sort };
-  const pulse = (ui.page.home || 1) === 1 ? await pulseSection().catch(() => "") : "";
-  return `${pulse}<section class="card pad stack" aria-label="Ask or share">
+  const firstPage = (ui.page.home || 1) === 1;
+  let top = "";
+  if (firstPage) {
+    const d = await homeData();
+    const { stories } = d;
+    const lead = stories[0];
+    const [extras, pollOpts, myPoll, answer] = await Promise.all([
+      lead ? leadExtras(lead) : null,
+      d.poll ? sb.from("poll_options").select("*").eq("poll_id", d.poll.id).order("position") : { data: [] },
+      d.poll && S.userId ? sb.from("poll_votes").select("option_id").eq("poll_id", d.poll.id).eq("user_id", S.userId).maybeSingle() : { data: null },
+      d.question && d.question.comment_count ? sb.from("comments").select("*").eq("target_type", "post").eq("target_id", d.question.id).is("parent_id", null).order("score", { ascending: false }).limit(1).maybeSingle() : { data: null },
+    ]);
+    const answerer = answer.data ? (await getProfiles([answer.data.author_id])).get(answer.data.author_id) : null;
+    const articles = stories.reduce((a, s) => a + (s.source_count || 1), 0);
+    const topics = new Set(stories.map((s) => s.topic)).size;
+    const brief = stories.slice(0, 3);
+
+    const pulse = stories.length ? `<section class="pulse-row" aria-label="Today in AI">
+      <div class="pulse">
+        <div class="row between" style="align-items:baseline"><h1>Today's AI pulse</h1><span class="mono" style="font-size:12px;color:var(--dark-muted)">LAST 24 HOURS</span></div>
+        <div class="stats"><span><b>${fmt(stories.length)}</b> <span>STORIES</span></span><span><b>${fmt(articles)}</b> <span>ARTICLES</span></span><span><b>${topics}</b> <span>TOPICS</span></span></div>
+        <figure>${pulseChart(stories)}<figcaption>New AI stories per hour, from every source we track${pulsePeak ? ` · <span style="color:#FFB547">● ${pulsePeak}</span>` : ""}</figcaption></figure>
+      </div>
+      <aside class="card pad stack briefing" aria-label="60-second briefing">
+        <div class="row" style="flex-wrap:nowrap;gap:14px"><span class="brief-icon" aria-hidden="true">${icon("news", 22)}</span>
+          <div><h2 style="font-size:22px;font-weight:800">The 60-second briefing</h2><p class="meta">The ${brief.length} most-covered AI stories right now</p></div></div>
+        <ol>${brief.map((s) => `<li><b>${esc(topicLabel(s.topic))}:</b> <a href="#/news/${s.id}">${esc(s.title)}</a></li>`).join("")}</ol>
+        <a class="link" style="margin-top:auto" href="#/news">All AI news →</a>
+      </aside>
+    </section>` : `<section class="pulse"><h1>Today's AI pulse</h1><p style="color:var(--dark-muted)">The first news of the day is on its way. News is collected every 30 minutes.</p></section>`;
+
+    const leadCard = lead ? `<section class="card pad lead-row">
+      <article class="lead">
+        <span class="eyebrow-mono">Top story · ${esc(topicLabel(lead.topic))} · ${plural(lead.source_count, "source")} · ${ago(lead.published_at || lead.created_at)}</span>
+        <h2><a href="#/news/${lead.id}" class="title-link">${esc(lead.title)}</a></h2>
+        ${lead.summary ? `<p class="body" style="font-size:18px;max-width:72ch">${esc(lead.summary)}</p>` : ""}
+        ${hypeBar(lead)}
+        ${rateButtons(lead.id, extras.mine)}
+        <div class="row"><a class="btn btn-p" href="#/news/${lead.id}">Read and discuss · ${lead.comment_count}</a></div>
+      </article>
+      <aside class="timeline" aria-label="More on this topic">
+        <h3>More in ${esc(topicLabel(lead.topic))}</h3>
+        ${extras.timeline.length ? extras.timeline.map((t, i) => `<div class="tl-item"><div class="tl-rail"><span class="tl-dot ${i === 0 ? "on" : ""}"></span>${i < extras.timeline.length - 1 ? `<span class="tl-line"></span>` : ""}</div>
+          <div class="tl-body"><span class="eyebrow-mono">${ago(t.published_at || t.created_at)}</span><a href="#/news/${t.id}">${esc(t.title)}</a></div></div>`).join("") : `<p class="meta">More stories on this topic will appear here.</p>`}
+        <a class="link" href="#/t/${esc(lead.topic)}">Follow ${esc(topicLabel(lead.topic))} →</a>
+      </aside>
+    </section>` : "";
+
+    const ed = d.editorial;
+    const debate = ed ? `<article class="card pad stack debate">
+        <span class="eyebrow-mono">Debate of the day · started by AI from today's news</span>
+        <h2 style="font-size:26px;font-weight:800;line-height:1.15"><a href="#/p/${ed.id}" class="title-link">${esc(ed.title)}</a></h2>
+        <p class="body clamp">${esc(ed.body)}</p>
+        <a class="btn btn-p" style="align-self:flex-start" href="#/p/${ed.id}">Add your argument · ${plural(ed.comment_count, "reply", "replies")}</a>
+      </article>` : "";
+    const pl = d.poll;
+    const pollCardHtml = pl ? `<article class="card pad stack">
+        <span class="eyebrow-mono">Poll of the day · ${plural(pl.total_votes, "vote")} · ${left(pl.closes_at) || "open"}</span>
+        <h2 style="font-size:22px;font-weight:800;line-height:1.2"><a href="#/polls/${pl.id}" class="title-link">${esc(pl.question)}</a></h2>
+        ${pollWidget(pl, pollOpts.data || [], myPoll.data ? myPoll.data.option_id : null)}
+        <a class="link" href="#/polls/${pl.id}">Explain your vote →</a>
+      </article>` : "";
+    const q = d.question;
+    const questionCard = q ? `<article class="card pad stack">
+        <span class="eyebrow-mono">Top question · ${plural(q.comment_count, "answer")}</span>
+        <h2 style="font-size:24px;font-weight:800;line-height:1.2"><a href="#/p/${q.id}" class="title-link">${esc(q.title)}</a></h2>
+        ${answer.data ? `${whoLine(answerer, answer.data.id === q.best_comment_id ? "Best answer" : "Top answer")}<p class="body clamp">${esc(answer.data.body)}</p>` : `<p class="meta">No answers yet. Be the first.</p>`}
+        <div class="row">${postActions(q.id, true, q.score, 0)}</div>
+      </article>` : "";
+    const side = `<aside class="card pad stack">
+        <h2 style="font-size:20px;font-weight:800">Trending this week</h2>
+        ${d.trending.map((t, i) => `<div class="list-row" style="justify-content:flex-start;align-items:flex-start"><span class="mono" style="width:18px;color:var(--accent);font-weight:600">${i + 1}</span><a class="title-link" style="font-size:15px;font-weight:600" href="#/${t.kind === "poll" ? "polls" : "p"}/${t.id}">${esc(t.title)}</a></div>`).join("") || `<p class="meta">Nothing trending yet.</p>`}
+        <h2 style="font-size:20px;font-weight:800;margin-top:8px">Stock debates</h2>
+        <div class="row">${d.tickers.map((t) => `<a class="pill" style="height:36px;font-size:13px" href="#/stocks/${t.symbol}">${t.symbol} · ${t.comment_count}</a>`).join("")}</div>
+        <p class="meta">Opinions only. Not investment advice.</p>
+      </aside>`;
+    top = `${pulse}${leadCard}
+      ${debate || pollCardHtml ? `<section class="grid2">${debate}${pollCardHtml}</section>` : ""}
+      <section class="grid2">${questionCard}${side}</section>
+      <h2 class="section-title">From the community</h2>`;
+  }
+  return `${top}<section class="card pad stack" aria-label="Ask or share">
       <div class="row" style="gap:12px;flex-wrap:nowrap">${avatar(p, 40)}<a href="${ask("question")}" class="composer-input">What do you want to ask or share about AI?</a></div>
       <div class="row"><a class="btn btn-soft" href="${ask("question")}">Ask a question</a><a class="btn btn-soft" href="${ask("discussion")}">Start a discussion</a><a class="btn btn-soft" href="${ask("poll")}">Create a poll</a></div>
     </section>
@@ -756,7 +820,7 @@ async function render({ keepScroll = false } = {}) {
   const y = window.scrollY;
   const focusId = document.activeElement && document.activeElement.id;
   let rail = true, page;
-  if (head === "ask" || head === "settings" || head === "login" || head === "admin" || head === "guidelines" || head === "terms" || head === "privacy") rail = false;
+  if (!head || head === "ask" || head === "settings" || head === "login" || head === "admin" || head === "guidelines" || head === "terms" || head === "privacy") rail = false;
   if (!keepScroll) document.title = SITE + " — AI news, polls and discussion";
   try {
     if (!keepScroll && !app.querySelector(".main")) app.innerHTML = shell(r, `<div class="skeleton"></div><div class="skeleton"></div>`, false, "");
