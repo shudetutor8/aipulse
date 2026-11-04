@@ -1464,7 +1464,7 @@ document.addEventListener("submit", async (e) => {
           : errText(e);
         return refresh();
       }
-      if (kind === "signup" && !res.data.session) { ui.ok.login = `Almost done: we sent a confirmation link to ${email}. Open it to finish creating your account.`; return refresh(); }
+      if (kind === "signup" && !res.data.session) { ui.ok.login = `Almost done: we sent a confirmation link to ${email}. Open it to finish creating your account. Not there in a minute? Check your Spam or Promotions folder and mark it "Not spam".`; return refresh(); }
       if (kind === "forgot") { ui.ok.login = `If there's an account for ${email}, we sent it a link to choose a new password.`; return refresh(); }
       if (kind === "newpw") { toast("Password saved."); location.hash = "#/"; return; }
       if (kind === "signup") toast("Welcome to " + SITE + "!");
@@ -1631,6 +1631,16 @@ sb.auth.onAuthStateChange((event) => {
 });
 (async () => {
   const params = new URLSearchParams(location.search);
+  // Email links point to our own domain (aiorhype.com/?token_hash=...&type=...) instead of supabase.co,
+  // which helps keep sign-up and password emails out of spam folders.
+  if (params.has("token_hash") && params.has("type")) {
+    const type = params.get("type");
+    const { error } = await sb.auth.verifyOtp({ token_hash: params.get("token_hash"), type });
+    history.replaceState(null, "", location.pathname + (type === "recovery" && !error ? "#/reset" : location.hash || "#/"));
+    if (error) setTimeout(() => toast("That link didn't work or has expired. Please try again."), 300);
+    else if (type === "recovery") ui.recovery = true;
+    else setTimeout(() => toast(type === "email_change" ? "Your email address is updated." : "Your email is confirmed. Welcome to " + SITE + "!"), 300);
+  }
   if (params.has("code") || params.has("error_description")) {
     await sb.auth.getSession(); // finishes the sign-in from the email link or Google
     if (params.has("error_description")) setTimeout(() => toast("That sign-in link didn't work or has expired. Please try again."), 300);
